@@ -13,6 +13,14 @@ project(Pound LANGUAGES C CXX VERSION 0.1.0)
 
 include(CompilerFlags)
 
+if (MINGW)
+    # Thread-locals exported from PoundCore are emulated by libgcc; every module
+    # must share one libgcc or each sees its own emutls table and crashes.
+    add_link_options(-shared-libgcc)
+    # GCC 14 rejects the missing <stdio.h> in imgui_impl_opengl3_loader.h.
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>)
+endif ()
+
 # -----------------------------------------------------------------------------
 # Setup Build Directory
 # -----------------------------------------------------------------------------
@@ -92,6 +100,10 @@ set_target_properties(imgui PROPERTIES
         INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>"
 )
 set_target_properties(imgui PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if (MINGW)
+    # cimgui's dllexport markers stop ld's implicit export-all, hiding the backends.
+    target_link_options(imgui PRIVATE -Wl,--export-all-symbols)
+endif ()
 
 # clang-cl doesn't receive /EHsc by default; mimalloc's alloc.c is compiled
 # as C++ and requires exceptions for its new/delete overrides.
@@ -154,7 +166,14 @@ set_target_properties(SDL3-shared PROPERTIES
 )
 
 message(STATUS "[PoundCore] Configuring Pound Core Library...")
-add_library(PoundCore OBJECT
+# PE DLLs cannot leave symbols unresolved, so on MinGW PoundGui needs core
+# in its own DLL that both it and the EXE import, keeping one copy of state.
+if (MINGW)
+    set(POUND_CORE_LIBRARY_TYPE SHARED)
+else ()
+    set(POUND_CORE_LIBRARY_TYPE OBJECT)
+endif ()
+add_library(PoundCore ${POUND_CORE_LIBRARY_TYPE}
         src/core/memory/memory.c
         src/core/memory/guest_memory.c
         src/core/guest_state.c
@@ -164,6 +183,9 @@ add_library(PoundCore OBJECT
 target_include_directories(PoundCore PUBLIC src/core)
 target_link_libraries(PoundCore PRIVATE mimalloc)
 set_target_properties(PoundCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if (MINGW)
+    set_target_properties(PoundCore PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif ()
 add_compiler_flags(PoundCore)
 add_linker_flags(PoundCore)
 add_sanitizers(PoundCore)
@@ -180,6 +202,9 @@ target_include_directories(PoundGui PUBLIC src/gui src/core)
 # mimalloc ahead of imgui keeps mimalloc-redirect ahead of ucrt in
 # PoundGui's import table.
 target_link_libraries(PoundGui PRIVATE mimalloc imgui)
+if (MINGW)
+    target_link_libraries(PoundGui PRIVATE PoundCore)
+endif ()
 set_target_properties(PoundGui PROPERTIES C_VISIBILITY_PRESET hidden)
 set_target_properties(PoundGui PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 if (WIN32)
@@ -197,7 +222,12 @@ message(STATUS "[Pound] Configuring Pound Executable...")
 
 add_executable(${PROJECT_NAME} src/main.c)
 target_include_directories(${PROJECT_NAME} PRIVATE src/)
-target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc PoundCore PoundGui Ballistic::Engine SDL3::SDL3 imgui)
+target_link_libraries(${PROJECT_NAME} PRIVATE mimalloc PoundCore PoundGui SDL3::SDL3 imgui)
+# The prebuilt Windows Ballistic.lib is MSVC-format, which MinGW ld cannot read.
+# Nothing calls into Ballistic yet, so MinGW builds skip it.
+if (NOT MINGW)
+    target_link_libraries(${PROJECT_NAME} PRIVATE Ballistic::Engine)
+endif ()
 if (MSVC)
     # Keep mimalloc.dll mapped so redirect can override malloc for the whole process.
     target_link_options(${PROJECT_NAME} PRIVATE "/INCLUDE:mi_version")
