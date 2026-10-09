@@ -41,7 +41,12 @@
 /// by providing a strong symbol with the same name.
 ///
 /// Usage: POUND_WEAK void POUND_default_logger(...);
+#if defined(__MINGW32__)
+// PE weak definitions are not exported from DLLs, so MinGW gets strong symbols.
+#define POUND_WEAK
+#else
 #define POUND_WEAK __attribute__((weak))
+#endif
 
 /// POUND_THREAD_LOCAL
 /// Declares a variable with thread-local storage duration.
