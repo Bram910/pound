@@ -24,6 +24,19 @@ DEVELOPER PLEASE GIVE US YOUR SUPPORT**
 - [ ] Create a JIT metadata manager.
 - [ ] Integrate Ballistic into Pound.
 
+<!-- POUND-STATUS:BEGIN -->
+## Status
+
+![cpu](docs/status/badge_cpu.svg) ![ir](docs/status/badge_ir.svg) ![gpu](docs/status/badge_gpu.svg)
+
+![Status](docs/status/status.svg)
+
+* ARM64: share of the 3856 A64 encodings in Ballistic's decoder table that its x86 tier-1 compiler can run (54 run, 201 decoded only, 3601 not started). Ballistic commit `9db2adab`.
+
+GPU (SM86 to SPIR-V) and Horizon OS services are not started yet; they get their own panels once there is code to measure.
+Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
+<!-- POUND-STATUS:END -->
+
 ## Development
 
 Pound actively supports Linux and Windows with the Clang compiler only. I cannot run Pound on Windows, so the Windows
