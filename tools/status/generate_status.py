@@ -300,7 +300,9 @@ def update_readme(arm_line):
 
 {arm_line}
 
-GPU (SM86 to SPIR-V) and Horizon OS services are not started yet; they get their own panels once there is code to measure.
+GPU shader translation (SM86 to SPIR-V) and Horizon OS services are not started yet.
+A [GPU command frontend and inspection tool](docs/GPU_DEVELOPMENT.md) are now available;
+command decoding is separate from shader translation and rendering.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 {MARK_END}"""
     text = README.read_text(encoding="utf-8")

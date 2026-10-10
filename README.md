@@ -33,7 +33,9 @@ DEVELOPER PLEASE GIVE US YOUR SUPPORT**
 
 * ARM64: share of the 3856 A64 encodings in Ballistic's decoder table that its x86 tier-1 compiler can run (54 run, 201 decoded only, 3601 not started). Ballistic commit `9db2adab`.
 
-GPU (SM86 to SPIR-V) and Horizon OS services are not started yet; they get their own panels once there is code to measure.
+GPU shader translation (SM86 to SPIR-V) and Horizon OS services are not started yet.
+A [GPU command frontend and inspection tool](docs/GPU_DEVELOPMENT.md) are now available;
+command decoding is separate from shader translation and rendering.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 <!-- POUND-STATUS:END -->
 

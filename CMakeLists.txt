@@ -174,6 +174,7 @@ else ()
     set(POUND_CORE_LIBRARY_TYPE OBJECT)
 endif ()
 add_library(PoundCore ${POUND_CORE_LIBRARY_TYPE}
+        src/core/gpu/gpu_pushbuffer.c
         src/core/memory/memory.c
         src/core/memory/guest_memory.c
         src/core/guest_state.c
@@ -189,6 +190,15 @@ endif ()
 add_compiler_flags(PoundCore)
 add_linker_flags(PoundCore)
 add_sanitizers(PoundCore)
+
+option(POUND_BUILD_GPU_TOOLS "Build GPU command inspection tools" OFF)
+if (POUND_BUILD_GPU_TOOLS)
+    add_executable(PoundGpuTrace tools/gpu/trace.c src/core/gpu/gpu_pushbuffer.c)
+    target_include_directories(PoundGpuTrace PRIVATE src/core)
+    add_compiler_flags(PoundGpuTrace)
+    add_linker_flags(PoundGpuTrace)
+    add_sanitizers(PoundGpuTrace)
+endif ()
 
 message(STATUS "[PoundGUI] Configuring Pound GUI Library...")
 add_library(PoundGui SHARED
