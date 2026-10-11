@@ -596,6 +596,8 @@ Build `PoundGpuShader` with `POUND_BUILD_GPU_TOOLS` and run:
 ```text
 PoundGpuShader trace raw-sm86.bin
 PoundGpuShader run raw-sm86.bin 100000
+PoundGpuShader analyze raw-sm86.bin
+PoundGpuShader run-prepared raw-sm86.bin 100000
 python tools/gpu/make_shader_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_control_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_bits_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
@@ -603,6 +605,7 @@ python tools/gpu/make_shader_extract_demo.py --shader-tool build/gcc/bin/windows
 python tools/gpu/make_shader_address_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_dot_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_compare_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
+python tools/gpu/make_shader_program_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 ```
 
 Trace emits one JSON object per instruction, retaining the raw words. The run
@@ -736,6 +739,69 @@ unchanged. These results do not validate warp control flow or rendering.
 This is not a warp interpreter, SPIR-V translator, Vulkan shader dispatch or
 proof of game compatibility. No
 shader-translation percentage is assigned from these prototype results.
+
+## Prepared shader programs and control flow
+
+`gpu_shader_program_prepare` snapshots supported instructions into caller-owned
+`gpu_shader_node_t` storage and builds `gpu_shader_block_t` control-flow records.
+After whole-program validation, it stores decoded instructions for subsequent
+execution rather than decoding every loop iteration.
+This is a reusable frontend representation for a future compiler, **not** x86
+machine-code emission, SPIR-V generation or host-GPU execution.
+
+The caller supplies node and block arrays, each with capacity for the raw
+instruction count, plus a program descriptor. This conservative capacity contract
+bounds every write without allocating inside the core. Successful preparation
+copies all instruction fields, including raw words, so the original input bytes
+can be released or changed afterwards. Nodes, blocks and the descriptor must
+remain unchanged and alive while executing; they must not overlap lane state.
+Preparation input, storage arrays and the output descriptor must not overlap,
+and input bytes must remain stable throughout preparation.
+
+Every encoding and branch target is validated before any output storage is
+written. Errors preserve the descriptor and both storage arrays. Unlike raw
+step-by-step execution, preparation rejects unsupported unreachable instructions
+and out-of-range targets even when their branch is statically skipped. It accepts
+programs without EXIT, but reaching their end still faults at execution time.
+Preparation requires nonempty, instruction-aligned input; raw decoding still
+supports unaligned byte pointers.
+
+Blocks begin at entry, branch targets and instructions after BRA/EXIT. Nodes
+map back to their containing block; branches retain their target instruction.
+Each block records up to two deduplicated successor block IDs, possible exit
+and possible falloff. PT/!PT constants and contradictory execution/condition
+guards prune impossible branch edges. Predicate values produced by earlier
+instructions are not propagated, and unreachable blocks are retained: this is
+structural control-flow analysis, not global constant folding or SIMT reconvergence.
+
+`gpu_shader_run_prepared` uses the same semantic executor as `gpu_shader_run`,
+with immutable prepared instructions instead of runtime decoding. Byte PC,
+predication, register/predicate aliases, fault states and resumable instruction
+budgets retain their raw-execution meaning. A single prepared program can be
+reused across separately owned lanes and multiple budgeted calls. There is no
+automatic cache lookup or invalidation; the caller chooses when to prepare
+a fresh snapshot after guest code changes.
+
+The CLI's `analyze` mode emits JSON block IDs, byte offsets, instruction counts,
+successors and exit/falloff flags. `run-prepared` emits the same lane-state JSON
+as `run`. Both prepared modes limit input to 65,536 instructions to bound host
+allocation; raw trace/run retain their existing 16 MiB input limit.
+
+The durable program demo checks 14 straight-line, diamond, guarded-exit,
+self-loop and counted-loop programs, deduplicated/contradictory edges, falloff,
+raw/prepared state agreement at different budgets and strict whole-program
+rejection. It writes `program-report.json` under `build/gpu-shader-program-demo`.
+Additional native and ASan/UBSan checks cover 10,000 randomized programs,
+all 128 predicate masks at every block terminator, decoded-node equality,
+resumption from interior PCs, snapshot independence, caller capacities and
+failure-state preservation. All existing shader instruction checks are retained.
+
+A development-only MinGW GCC `-O2` benchmark of seven alternating-order samples
+measured the prepared CPU reference path at approximately 4.1x the raw path for
+an integer/branch loop and 2.2x for a mixed bit-operation loop. Every sample
+compares final raw/prepared states and executes five million guest instructions;
+preparation is outside the timed interval. These are synthetic CPU interpreter
+measurements, **not** GPU shader throughput, game frame rates or a JIT benchmark.
 
 ## Next layers
 

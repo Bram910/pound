@@ -661,8 +661,12 @@ multiply_integer(uint32_t first, uint32_t second, uint32_t signed_value)
     return (uint64_t)(first_value * second_value);
 }
 
-error_t
-gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32_t budget)
+static error_t
+execute_program(gpu_shader_lane_t       *lane,
+                const void              *program,
+                size_t                   size,
+                uint32_t                 budget,
+                const gpu_shader_node_t *nodes)
 {
     if (NULL == lane || NULL == program || 0 != (lane->predicates & ~0x7FU)
         || 0 != size % GPU_SHADER_INSTRUCTION_SIZE || 0 != lane->pc % GPU_SHADER_INSTRUCTION_SIZE
@@ -684,48 +688,57 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
         {
             return POUND_ERROR_GPU_RESOURCE_LIMIT;
         }
-        gpu_shader_instruction_t instruction;
-        const error_t            status
-            = gpu_shader_decode(bytes + pc, GPU_SHADER_INSTRUCTION_SIZE, &instruction);
-        if (POUND_SUCCESS != status)
+        gpu_shader_instruction_t        decoded;
+        const gpu_shader_instruction_t *instruction;
+        if (NULL != nodes)
         {
-            return status;
+            instruction = &nodes[pc / GPU_SHADER_INSTRUCTION_SIZE].instruction;
+        }
+        else
+        {
+            const error_t status
+                = gpu_shader_decode(bytes + pc, GPU_SHADER_INSTRUCTION_SIZE, &decoded);
+            if (POUND_SUCCESS != status)
+            {
+                return status;
+            }
+            instruction = &decoded;
         }
         size_t next = pc + GPU_SHADER_INSTRUCTION_SIZE;
-        if (0 != predicate_value(lane, instruction.predicate, instruction.predicate_invert))
+        if (0 != predicate_value(lane, instruction->predicate, instruction->predicate_invert))
         {
             uint32_t       value                = 0;
             uint32_t       predicate_results[2] = { 0 };
             uint64_t       wide_result          = 0;
-            const uint32_t complement           = GPU_SHADER_POPC == instruction.operation
-                                        || GPU_SHADER_FLO == instruction.operation
-                                        || ((GPU_SHADER_IADD3 == instruction.operation
-                                             || GPU_SHADER_LEA == instruction.operation)
-                                            && 0 != instruction.carry_in);
-            const uint32_t first  = source_value(lane, &instruction.sources[0], complement);
-            const uint32_t second = source_value(lane, &instruction.sources[1], complement);
-            const uint32_t third  = source_value(lane, &instruction.sources[2], complement);
-            switch (instruction.operation)
+            const uint32_t complement           = GPU_SHADER_POPC == instruction->operation
+                                        || GPU_SHADER_FLO == instruction->operation
+                                        || ((GPU_SHADER_IADD3 == instruction->operation
+                                             || GPU_SHADER_LEA == instruction->operation)
+                                            && 0 != instruction->carry_in);
+            const uint32_t first  = source_value(lane, &instruction->sources[0], complement);
+            const uint32_t second = source_value(lane, &instruction->sources[1], complement);
+            const uint32_t third  = source_value(lane, &instruction->sources[2], complement);
+            switch (instruction->operation)
             {
                 case GPU_SHADER_MOV:
                     value = first;
                     break;
                 case GPU_SHADER_IADD3: {
                     uint64_t sum = (uint64_t)first + second + third;
-                    if (0 != instruction.carry_in)
+                    if (0 != instruction->carry_in)
                     {
                         for (uint32_t index = 0; index < 2U; ++index)
                         {
                             sum += predicate_value(lane,
-                                                   instruction.predicate_sources[index],
-                                                   instruction.predicate_source_inverts[index]);
+                                                   instruction->predicate_sources[index],
+                                                   instruction->predicate_source_inverts[index]);
                         }
                     }
                     else
                     {
                         const uint32_t             values[3] = { first, second, third };
                         const uint32_t            *operand   = values;
-                        const gpu_shader_source_t *source    = instruction.sources;
+                        const gpu_shader_source_t *source    = instruction->sources;
                         for (uint32_t index = 0; index < 3U; ++index, ++operand, ++source)
                         {
                             if (0 != source->negate && 0 == *operand)
@@ -740,45 +753,45 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                     break;
                 }
                 case GPU_SHADER_IMAD:
-                    if (GPU_SHADER_MULTIPLY_LOW == instruction.multiply_mode)
+                    if (GPU_SHADER_MULTIPLY_LOW == instruction->multiply_mode)
                     {
                         value = first * second + third;
                     }
                     else
                     {
-                        const uint32_t accumulator = instruction.sources[2].value;
+                        const uint32_t accumulator = instruction->sources[2].value;
                         const uint32_t upper       = GPU_SHADER_ZERO_REGISTER == accumulator
                                                          ? 0
                                                          : lane->registers[accumulator + 1U];
-                        wide_result = multiply_integer(first, second, instruction.compare_signed)
+                        wide_result = multiply_integer(first, second, instruction->compare_signed)
                                       + ((uint64_t)third | ((uint64_t)upper << 32U));
-                        value = (uint32_t)(GPU_SHADER_MULTIPLY_HIGH == instruction.multiply_mode
+                        value = (uint32_t)(GPU_SHADER_MULTIPLY_HIGH == instruction->multiply_mode
                                                ? wide_result >> 32U
                                                : wide_result);
                     }
                     break;
                 case GPU_SHADER_IDP4:
                 case GPU_SHADER_IDP2:
-                    value = packed_dot(first, second, third, &instruction);
+                    value = packed_dot(first, second, third, instruction);
                     break;
                 case GPU_SHADER_LEA: {
                     const uint32_t shifted
-                        = 0 != instruction.shift_high
+                        = 0 != instruction->shift_high
                               ? (uint32_t)(((uint64_t)first | ((uint64_t)third << 32U))
-                                           >> (32U - instruction.address_shift))
-                              : first << instruction.address_shift;
+                                           >> (32U - instruction->address_shift))
+                              : first << instruction->address_shift;
                     uint64_t sum = shifted;
-                    if (0 != instruction.intermediate_negate)
+                    if (0 != instruction->intermediate_negate)
                     {
-                        sum = (uint64_t)~shifted + (0 != instruction.carry_in ? 0U : 1U);
+                        sum = (uint64_t)~shifted + (0 != instruction->carry_in ? 0U : 1U);
                     }
                     sum += second;
-                    if (0 != instruction.carry_in)
+                    if (0 != instruction->carry_in)
                     {
                         sum += predicate_value(
-                            lane, instruction.condition, instruction.condition_invert);
+                            lane, instruction->condition, instruction->condition_invert);
                     }
-                    else if (0 != instruction.sources[1].negate && 0 == second)
+                    else if (0 != instruction->sources[1].negate && 0 == second)
                     {
                         sum += UINT64_C(1) << 32U;
                     }
@@ -792,14 +805,14 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                         const uint32_t index = (((first >> bit) & 1U) << 2U)
                                                | (((second >> bit) & 1U) << 1U)
                                                | ((third >> bit) & 1U);
-                        value |= ((instruction.lookup >> index) & 1U) << bit;
+                        value |= ((instruction->lookup >> index) & 1U) << bit;
                     }
                     predicate_results[0] = combine_predicates(
                         0 != value,
                         predicate_value(lane,
-                                        instruction.predicate_sources[0],
-                                        instruction.predicate_source_inverts[0]),
-                        instruction.boolean_operation);
+                                        instruction->predicate_sources[0],
+                                        instruction->predicate_source_inverts[0]),
+                        instruction->boolean_operation);
                     break;
                 case GPU_SHADER_POPC:
                     for (uint32_t remaining = first; 0 != remaining; remaining &= remaining - 1U)
@@ -817,82 +830,82 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                     value = 0 != (first & 0x80000000U) ? 0U - first : first;
                     break;
                 case GPU_SHADER_SHF:
-                    value = funnel_shift(first, second, third, &instruction);
+                    value = funnel_shift(first, second, third, instruction);
                     break;
                 case GPU_SHADER_FLO:
-                    value = find_leading(first, &instruction);
+                    value = find_leading(first, instruction);
                     break;
                 case GPU_SHADER_PRMT:
-                    value = permute_bytes(first, second, third, instruction.permute_mode);
+                    value = permute_bytes(first, second, third, instruction->permute_mode);
                     break;
                 case GPU_SHADER_SGXT:
                     value = extract_low_bits(first,
-                                             0 != instruction.shift_wrap ? second & 31U : second,
-                                             instruction.compare_signed);
+                                             0 != instruction->shift_wrap ? second & 31U : second,
+                                             instruction->compare_signed);
                     break;
                 case GPU_SHADER_BMSK: {
-                    const uint32_t position = 0 != instruction.shift_wrap ? first & 31U : first;
-                    const uint32_t width    = 0 != instruction.shift_wrap ? second & 31U : second;
+                    const uint32_t position = 0 != instruction->shift_wrap ? first & 31U : first;
+                    const uint32_t width    = 0 != instruction->shift_wrap ? second & 31U : second;
                     const uint32_t mask     = width >= 32U ? UINT32_MAX : (1U << width) - 1U;
                     value                   = position >= 32U ? 0 : mask << position;
                     break;
                 }
                 case GPU_SHADER_IMNMX: {
-                    const uint32_t sign    = 0 != instruction.compare_signed ? 0x80000000U : 0;
+                    const uint32_t sign    = 0 != instruction->compare_signed ? 0x80000000U : 0;
                     const uint32_t less    = (first ^ sign) < (second ^ sign);
                     const uint32_t minimum = predicate_value(
-                        lane, instruction.condition, instruction.condition_invert);
+                        lane, instruction->condition, instruction->condition_invert);
                     value = less == minimum ? first : second;
                     break;
                 }
                 case GPU_SHADER_SEL:
                     value = 0
                                     != predicate_value(
-                                        lane, instruction.condition, instruction.condition_invert)
+                                        lane, instruction->condition, instruction->condition_invert)
                                 ? first
                                 : second;
                     break;
                 case GPU_SHADER_ISETP: {
-                    uint32_t comparison = compare_integer(first, second, &instruction);
-                    if (0 != instruction.compare_extended && first == second
-                        && GPU_SHADER_COMPARE_FALSE != instruction.comparison
-                        && GPU_SHADER_COMPARE_TRUE != instruction.comparison)
+                    uint32_t comparison = compare_integer(first, second, instruction);
+                    if (0 != instruction->compare_extended && first == second
+                        && GPU_SHADER_COMPARE_FALSE != instruction->comparison
+                        && GPU_SHADER_COMPARE_TRUE != instruction->comparison)
                     {
                         comparison = predicate_value(lane,
-                                                     instruction.predicate_sources[1],
-                                                     instruction.predicate_source_inverts[1]);
+                                                     instruction->predicate_sources[1],
+                                                     instruction->predicate_source_inverts[1]);
                     }
                     const uint32_t condition
                         = predicate_value(lane,
-                                          instruction.predicate_sources[0],
-                                          instruction.predicate_source_inverts[0]);
+                                          instruction->predicate_sources[0],
+                                          instruction->predicate_source_inverts[0]);
                     predicate_results[0]
-                        = combine_predicates(comparison, condition, instruction.boolean_operation);
+                        = combine_predicates(comparison, condition, instruction->boolean_operation);
                     predicate_results[1] = combine_predicates(
-                        comparison ^ 1U, condition, instruction.boolean_operation);
+                        comparison ^ 1U, condition, instruction->boolean_operation);
                     break;
                 }
                 case GPU_SHADER_PLOP3: {
                     uint32_t        index  = 0;
-                    const uint32_t *source = instruction.predicate_sources;
-                    const uint32_t *invert = instruction.predicate_source_inverts;
+                    const uint32_t *source = instruction->predicate_sources;
+                    const uint32_t *invert = instruction->predicate_source_inverts;
                     for (uint32_t source_index = 0; source_index < 3U;
                          ++source_index, ++source, ++invert)
                     {
                         index = (index << 1U) | predicate_value(lane, *source, *invert);
                     }
-                    predicate_results[0] = (instruction.predicate_lookups[0] >> index) & 1U;
-                    predicate_results[1] = (instruction.predicate_lookups[1] >> index) & 1U;
+                    predicate_results[0] = (instruction->predicate_lookups[0] >> index) & 1U;
+                    predicate_results[1] = (instruction->predicate_lookups[1] >> index) & 1U;
                     break;
                 }
                 case GPU_SHADER_BRA:
                     if (0
                         != predicate_value(
-                            lane, instruction.condition, instruction.condition_invert))
+                            lane, instruction->condition, instruction->condition_invert))
                     {
-                        if (instruction.branch_bytes < 0)
+                        if (instruction->branch_bytes < 0)
                         {
-                            const uint64_t magnitude = (uint64_t)-instruction.branch_bytes;
+                            const uint64_t magnitude = (uint64_t)-instruction->branch_bytes;
                             if (magnitude > next)
                             {
                                 return POUND_ERROR_GPU_INVALID_SHADER;
@@ -901,7 +914,7 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                         }
                         else
                         {
-                            const uint64_t distance = (uint64_t)instruction.branch_bytes;
+                            const uint64_t distance = (uint64_t)instruction->branch_bytes;
                             if (distance > size - next)
                             {
                                 return POUND_ERROR_GPU_INVALID_SHADER;
@@ -923,10 +936,10 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                     return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
             }
             uint32_t        predicates  = lane->predicates;
-            const uint32_t *destination = instruction.predicate_destinations;
+            const uint32_t *destination = instruction->predicate_destinations;
             const uint32_t *result      = predicate_results;
             for (uint32_t destination_index = 0;
-                 destination_index < instruction.predicate_destination_count;
+                 destination_index < instruction->predicate_destination_count;
                  ++destination_index, ++destination, ++result)
             {
                 if (GPU_SHADER_TRUE_PREDICATE != *destination)
@@ -935,14 +948,14 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                 }
             }
             lane->predicates = predicates;
-            if (0 != instruction.source_count
-                && GPU_SHADER_ZERO_REGISTER != instruction.destination)
+            if (0 != instruction->source_count
+                && GPU_SHADER_ZERO_REGISTER != instruction->destination)
             {
-                lane->registers[instruction.destination] = value;
-                if (GPU_SHADER_IMAD == instruction.operation
-                    && GPU_SHADER_MULTIPLY_WIDE == instruction.multiply_mode)
+                lane->registers[instruction->destination] = value;
+                if (GPU_SHADER_IMAD == instruction->operation
+                    && GPU_SHADER_MULTIPLY_WIDE == instruction->multiply_mode)
                 {
-                    lane->registers[instruction.destination + 1U] = (uint32_t)(wide_result >> 32U);
+                    lane->registers[instruction->destination + 1U] = (uint32_t)(wide_result >> 32U);
                 }
             }
         }
@@ -953,4 +966,26 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
         lane->halted = halted;
     }
     return 0 != halted ? POUND_SUCCESS : POUND_ERROR_GPU_RESOURCE_LIMIT;
+}
+
+error_t
+gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32_t budget)
+{
+    return execute_program(lane, program, size, budget, NULL);
+}
+
+error_t
+gpu_shader_run_prepared(gpu_shader_lane_t          *lane,
+                        const gpu_shader_program_t *program,
+                        uint32_t                    budget)
+{
+    if (NULL == program || NULL == program->nodes || NULL == program->blocks
+        || 0 == program->instruction_count || 0 == program->block_count
+        || program->block_count > program->instruction_count
+        || program->instruction_count > SIZE_MAX / GPU_SHADER_INSTRUCTION_SIZE
+        || program->byte_size != program->instruction_count * GPU_SHADER_INSTRUCTION_SIZE)
+    {
+        return POUND_ERROR_INVALID_ARGUMENT;
+    }
+    return execute_program(lane, program->nodes, program->byte_size, budget, program->nodes);
 }

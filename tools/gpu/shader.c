@@ -4,8 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SHADER_TOOL_SIZE_LIMIT   (16U * 1024U * 1024U)
-#define SHADER_TOOL_BUDGET_LIMIT 1000000U
+#define SHADER_TOOL_SIZE_LIMIT    (16U * 1024U * 1024U)
+#define SHADER_TOOL_BUDGET_LIMIT  1000000U
+#define SHADER_TOOL_PROGRAM_LIMIT 65536U
 
 static uint8_t *
 load_shader(const char *path, size_t *size)
@@ -173,14 +174,15 @@ parse_budget(const char *text, uint32_t *budget)
 }
 
 static int
-run_shader(const uint8_t *bytes, size_t size, uint32_t budget)
+run_shader(const uint8_t *bytes, size_t size, uint32_t budget, const gpu_shader_program_t *program)
 {
     gpu_shader_lane_t lane;
     if (POUND_SUCCESS != gpu_shader_lane_init(&lane))
     {
         return 1;
     }
-    const error_t status = gpu_shader_run(&lane, bytes, size, budget);
+    const error_t status = NULL == program ? gpu_shader_run(&lane, bytes, size, budget)
+                                           : gpu_shader_run_prepared(&lane, program, budget);
     if (POUND_SUCCESS != status)
     {
         fprintf(stderr,
@@ -208,15 +210,79 @@ run_shader(const uint8_t *bytes, size_t size, uint32_t budget)
     return POUND_SUCCESS == status && 0 == ferror(stdout) ? 0 : 1;
 }
 
+static int
+analyze_shader(const gpu_shader_program_t *program)
+{
+    printf("{\"instruction_count\":%zu,\"block_count\":%zu,\"blocks\":[",
+           program->instruction_count,
+           program->block_count);
+    const gpu_shader_block_t *block = program->blocks;
+    for (size_t index = 0; index < program->block_count; ++index, ++block)
+    {
+        printf("%s{\"id\":%zu,\"offset\":%zu,\"instruction_count\":%zu,\"successors\":[",
+               0 != index ? "," : "",
+               index,
+               block->first_instruction * GPU_SHADER_INSTRUCTION_SIZE,
+               block->instruction_count);
+        const size_t *successor = block->successors;
+        for (uint32_t edge = 0; edge < block->successor_count; ++edge, ++successor)
+        {
+            printf("%s%zu", 0 != edge ? "," : "", *successor);
+        }
+        printf("],\"exits\":%u,\"falls_off\":%u}", block->exits, block->falls_off);
+    }
+    puts("]}");
+    return 0 == ferror(stdout) ? 0 : 1;
+}
+
+static int
+prepare_shader(const uint8_t *bytes, size_t size, uint32_t budget, uint32_t analyze)
+{
+    const size_t count = size / GPU_SHADER_INSTRUCTION_SIZE;
+    if (count > SHADER_TOOL_PROGRAM_LIMIT)
+    {
+        fprintf(
+            stderr, "Prepared shaders are limited to %u instructions\n", SHADER_TOOL_PROGRAM_LIMIT);
+        return 1;
+    }
+    gpu_shader_node_t  *nodes  = malloc(count * sizeof(*nodes));
+    gpu_shader_block_t *blocks = malloc(count * sizeof(*blocks));
+    if (NULL == nodes || NULL == blocks)
+    {
+        free(blocks);
+        free(nodes);
+        return 1;
+    }
+    gpu_shader_program_t program;
+    const error_t        status
+        = gpu_shader_program_prepare(bytes, size, nodes, count, blocks, count, &program);
+    int result = 1;
+    if (POUND_SUCCESS != status)
+    {
+        fprintf(stderr, "Shader preparation error %d\n", (int)status);
+    }
+    else
+    {
+        result = analyze ? analyze_shader(&program) : run_shader(bytes, size, budget, &program);
+    }
+    free(blocks);
+    free(nodes);
+    return result;
+}
+
 int
 main(int argc, char **argv)
 {
-    uint32_t budget = 100000U;
-    if (argc < 3 || argc > 4 || (0 != strcmp(argv[1], "trace") && 0 != strcmp(argv[1], "run"))
-        || (4 == argc && (0 != strcmp(argv[1], "run") || 0 != parse_budget(argv[3], &budget))))
+    uint32_t       budget = 100000U;
+    const uint32_t run
+        = argc >= 2 && (0 == strcmp(argv[1], "run") || 0 == strcmp(argv[1], "run-prepared"));
+    if (argc < 3 || argc > 4
+        || (!run && 0 != strcmp(argv[1], "trace") && 0 != strcmp(argv[1], "analyze"))
+        || (4 == argc && (!run || 0 != parse_budget(argv[3], &budget))))
     {
         fprintf(stderr,
-                "Usage: %s trace <raw-sm86.bin> | run <raw-sm86.bin> [budget=1..1000000]\n",
+                "Usage: %s trace|analyze <raw-sm86.bin> | run|run-prepared <raw-sm86.bin> "
+                "[budget=1..1000000]\n",
                 argv[0]);
         return 1;
     }
@@ -226,8 +292,19 @@ main(int argc, char **argv)
     {
         return 1;
     }
-    const int result = 0 == strcmp(argv[1], "trace") ? trace_shader(bytes, size)
-                                                     : run_shader(bytes, size, budget);
+    int result;
+    if (0 == strcmp(argv[1], "trace"))
+    {
+        result = trace_shader(bytes, size);
+    }
+    else if (0 == strcmp(argv[1], "run"))
+    {
+        result = run_shader(bytes, size, budget, NULL);
+    }
+    else
+    {
+        result = prepare_shader(bytes, size, budget, 0 == strcmp(argv[1], "analyze"));
+    }
     free(bytes);
     return result;
 }

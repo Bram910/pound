@@ -145,9 +145,45 @@ typedef struct
     uint64_t steps;
 } gpu_shader_lane_t;
 
+typedef struct
+{
+    gpu_shader_instruction_t instruction;
+    size_t                   block_index;
+    size_t                   branch_instruction;
+} gpu_shader_node_t;
+
+typedef struct
+{
+    size_t   first_instruction;
+    size_t   instruction_count;
+    size_t   successors[2];
+    uint32_t successor_count;
+    uint32_t exits;
+    uint32_t falls_off;
+} gpu_shader_block_t;
+
+typedef struct
+{
+    const gpu_shader_node_t  *nodes;
+    const gpu_shader_block_t *blocks;
+    size_t                    instruction_count;
+    size_t                    block_count;
+    size_t                    byte_size;
+} gpu_shader_program_t;
+
 error_t gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *instruction);
 const char *gpu_shader_operation_name(gpu_shader_operation_t operation);
 error_t     gpu_shader_lane_init(gpu_shader_lane_t *lane);
 error_t gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32_t budget);
+error_t gpu_shader_program_prepare(const void           *bytes,
+                                   size_t                size,
+                                   gpu_shader_node_t    *nodes,
+                                   size_t                node_capacity,
+                                   gpu_shader_block_t   *blocks,
+                                   size_t                block_capacity,
+                                   gpu_shader_program_t *program);
+error_t gpu_shader_run_prepared(gpu_shader_lane_t          *lane,
+                                const gpu_shader_program_t *program,
+                                uint32_t                    budget);
 
 #endif
