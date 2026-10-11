@@ -88,6 +88,7 @@ trace_shader(const uint8_t *bytes, size_t size)
             "],\"shift_type\":%u,\"shift_right\":%u,\"shift_wrap\":%u,\"shift_high\":%u,\"return_"
             "shift\":%u,"
             "\"address_shift\":%u,\"intermediate_negate\":%u,\"carry_in\":%u,"
+            "\"dot_signed\":[%u,%u],\"dot_high\":%u,\"multiply_mode\":%u,"
             "\"permute_mode\":%u,\"comparison\":%u,\"compare_signed\":%u,\"boolean_operation\":%u,"
             "\"predicate_sources\":[",
             (uint32_t)instruction.shift_type,
@@ -98,6 +99,10 @@ trace_shader(const uint8_t *bytes, size_t size)
             instruction.address_shift,
             instruction.intermediate_negate,
             instruction.carry_in,
+            instruction.dot_signed[0],
+            instruction.dot_signed[1],
+            instruction.dot_high,
+            (uint32_t)instruction.multiply_mode,
             (uint32_t)instruction.permute_mode,
             (uint32_t)instruction.comparison,
             instruction.compare_signed,

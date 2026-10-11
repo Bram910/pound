@@ -436,7 +436,9 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | MOV | GPR or 32-bit immediate, full quad-lane mask |
 | IADD3 | GPR/immediate middle operand, negation, dual carry outputs; .X complements and two predicate carry inputs |
 | LEA | Low/high shifted address arithmetic, register/immediate addend or immediate high source, negation, carry output and .X carry input |
-| IMAD | GPR or immediate multiplicand/addend, low 32-bit result |
+| IMAD | Low 32-bit result with register/immediate multiplicand/addend; signed/unsigned .WIDE and .HI with register-pair accumulator and register/immediate multiplicand |
+| IDP.4A | Four packed 8-bit products accumulated modulo 32 bits, independently signed/unsigned multiplicands, register inputs |
+| IDP.2A | Two packed 16-bit-by-8-bit products accumulated modulo 32 bits, independent signedness, low/high byte-pair selection, register inputs |
 | LOP3.LUT | GPR/immediate middle operand, all 256 truth tables, discarded predicate output |
 | POPC | GPR/immediate, optional register complement |
 | SEL | GPR/immediate alternatives and predicate condition |
@@ -496,6 +498,30 @@ bits remain payload, not register modifiers.
 IMNMX uses the minimum when its condition is true and the maximum otherwise.
 IABS of `0x80000000` remains `0x80000000`; it is not saturating. BREV reverses
 all 32 bits. These operations do not implement extended/64-bit variants.
+
+IDP.4A multiplies corresponding bytes of its first two registers and adds all
+four products to the accumulator. IDP.2A uses the first register's two 16-bit
+elements and either the second register's low two or high two bytes. Each
+multiplicand has its own signedness; signed bytes/halfwords are extended before
+multiplication. Accumulation wraps modulo 2^32, with no saturation. These are
+single-lane packed operations, not cooperative tensor/warp instructions.
+Immediate IDP forms are rejected: SM86 disassembly does not recognize them.
+
+IMAD.WIDE multiplies two signed or unsigned 32-bit operands, adds a **64-bit
+register-pair accumulator**, and writes both halves of the 64-bit result.
+IMAD.HI computes the same sum but writes only its upper 32 bits. It is not
+high-product-plus-32-bit-addend: carries from the accumulator's low half matter.
+RZ means an entirely zero accumulator or discarded destination. All operands,
+including an accumulator or multiplicand aliased with the destination pair,
+are captured before either result register changes. Signed multiplication
+and 64-bit wrapping avoid signed-overflow and signed-shift assumptions in C.
+
+This checked .WIDE/.HI subset requires accumulator pairs to start at an even
+R0–R252, or RZ; .WIDE destinations have the same restriction. .HI destinations
+are ordinary single registers. Odd/last partial pairs, source modifiers,
+immediate accumulators, carry predicates and .X variants are not implemented
+and fail explicitly. A register or full 32-bit immediate multiplicand is
+supported. Plain low-result IMAD retains its existing immediate-addend form.
 
 SHF concatenates two 32-bit inputs, shifts that pair and extracts a 32-bit
 low or high result. The type controls whether distances wrap modulo 32/64 or
@@ -562,6 +588,7 @@ python tools/gpu/make_shader_control_demo.py --shader-tool build/gcc/bin/windows
 python tools/gpu/make_shader_bits_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_extract_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_address_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
+python tools/gpu/make_shader_dot_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 ```
 
 Trace emits one JSON object per instruction, retaining the raw words. The run
@@ -580,6 +607,10 @@ distance, shifted-value modifier and extended mode; `shift_high` selects .HI.
 `carry_in` also selects IADD3.X. Source `negate` fields mean complement in .X
 mode rather than integer negation, and predicate arrays expose carry inputs
 and outputs independently of GPR operands.
+`dot_signed` contains the first/second multiplicand signedness flags; `dot_high`
+selects IDP.2A's high byte pair. `multiply_mode` is 0=low, 1=wide, 2=high.
+In wide/high multiply mode the third register operand names the low half of a
+64-bit pair (RZ names zero), and wide destinations name two consecutive GPRs.
 Files are bounded to 16 MiB and CLI budgets to one million instructions. The
 default run budget is 100,000. The synthetic demo independently checks all output
 registers, predicates and a skipped instruction, and saves `shader-report.json`
@@ -611,7 +642,14 @@ chains, carry input/output aliasing, negated zero, RZ and predication. It writes
 `address-report.json` under `build/gpu-shader-address-demo` and supports the
 same optional nvdisasm check. It does not submit a Vulkan shader.
 
-This frontend has been checked against 48,000 synthetic encodings using NVIDIA's
+The dot demo checks eight boundary programs, every packed-dot sign and byte
+selection mode, signed/unsigned wide/high multiplication, immediate
+multiplicands, 64-bit accumulator carries, operand/result-pair aliases, RZ and
+predication. It writes `dot-report.json` under `build/gpu-shader-dot-demo` and
+supports the same optional nvdisasm check. Like the other durable demos, it
+runs the single-lane executor, not a graphics dispatch.
+
+This frontend has been checked against 60,000 synthetic encodings using NVIDIA's
 SM86 disassembler, including operand order, immediates, negation, execution
 predicates, comparison modes, predicate outputs, both PLOP3 tables and branch
 targets. Additional scalar checks cover 100,000 new-family programs, all 65,536
@@ -626,6 +664,10 @@ permutation cases, including ignored selector high bits and resumable budgets.
 Address arithmetic adds 100,000 randomized programs, including carry and
 execution predicate aliases, both GPR/predicate outputs, instruction-budget
 resumption and failure-state preservation, also checked with ASan/UBSan.
+Packed/wide arithmetic adds 100,000 randomized programs and all 262,144 byte
+pair/signedness combinations, using independent scalar calculations and
+bit-by-bit multiplication, checked natively and with ASan/UBSan. These also
+check 64-bit register aliases, budget resumption and malformed-state preservation.
 
 Separate development probes also compared Pound's SHF/FLO/PRMT/SGXT/BMSK results
 directly against 413,696 cases on an NVIDIA GeForce RTX 3080. Those probes replace only
@@ -644,6 +686,15 @@ and predicate-comparison instructions are replaced in a bounded private CUDA
 kernel; its input/output addressing and stores remain unchanged. Results are
 compared with both independent scalar calculations and Pound's executor.
 These development probes are not a production GPU backend or a rendering test.
+
+Packed-dot and multiply probes add 679,936 hardware comparisons: 65,536 packed
+dot/high-multiply results plus 614,400 wide/high register-pair results across
+150 multiply variants. They cover all packed signedness modes and byte-pair
+selections, signed/unsigned wide/high multiplication, immediate multiplicands,
+overflow boundaries, source/destination aliases and discarded RZ writes.
+Only arithmetic instructions are replaced in private, bounded CUDA kernels;
+input/output addressing and stores remain unchanged. Candidate encodings are
+checked by nvdisasm before GPU submission. CUDA remains development-only.
 
 This is not a warp interpreter, SPIR-V translator, Vulkan shader dispatch or
 proof of game compatibility. No
@@ -674,3 +725,5 @@ captured game submissions.
 - [Mesa NAK SM70+ encoder used for SM86 field references](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/nouveau/compiler/nak/sm70_encode.rs)
 - [NVIDIA CUDA binary utilities and raw SM86 disassembly](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)
 - [NVIDIA PTX byte permutation semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-prmt)
+- [NVIDIA PTX packed byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp4a)
+- [NVIDIA PTX packed halfword/byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp2a)

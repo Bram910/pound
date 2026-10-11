@@ -195,8 +195,36 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             {
                 return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
             }
-            decoded.operation    = GPU_SHADER_IMAD;
-            decoded.source_count = 3U;
+            decoded.operation      = GPU_SHADER_IMAD;
+            decoded.source_count   = 3U;
+            decoded.compare_signed = (third >> 9U) & 1U;
+            break;
+        case 0x025U:
+        case 0x027U:
+            if (0x078E0000U != (third & ~0x2FFU)
+                || (255U != (third & 255U) && (0 != (third & 1U) || (third & 255U) > 252U))
+                || (0x025U == operation && GPU_SHADER_ZERO_REGISTER != decoded.destination
+                    && (0 != (decoded.destination & 1U) || decoded.destination > 252U)))
+            {
+                return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+            }
+            decoded.operation      = GPU_SHADER_IMAD;
+            decoded.source_count   = 3U;
+            decoded.compare_signed = (third >> 9U) & 1U;
+            decoded.multiply_mode
+                = 0x025U == operation ? GPU_SHADER_MULTIPLY_WIDE : GPU_SHADER_MULTIPLY_HIGH;
+            break;
+        case 0x026U:
+            if (1U != form || 0 != (third & ~0x36FFU)
+                || (0 != (third & 0x2000U) && 0 == (third & 0x1000U)))
+            {
+                return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+            }
+            decoded.operation     = 0 != (third & 0x1000U) ? GPU_SHADER_IDP2 : GPU_SHADER_IDP4;
+            decoded.source_count  = 3U;
+            decoded.dot_signed[0] = (third >> 9U) & 1U;
+            decoded.dot_signed[1] = (third >> 10U) & 1U;
+            decoded.dot_high      = (third >> 13U) & 1U;
             break;
         case 0x011U:
             if (0 != (third & ~0x078FFDFFU) || (0 == (third & 0x400U) && 0 != (third & 0x07800000U))
@@ -383,6 +411,10 @@ gpu_shader_operation_name(gpu_shader_operation_t operation)
             return "BMSK";
         case GPU_SHADER_LEA:
             return "LEA";
+        case GPU_SHADER_IDP4:
+            return "IDP4";
+        case GPU_SHADER_IDP2:
+            return "IDP2";
         default:
             return "UNKNOWN";
     }
@@ -572,6 +604,48 @@ extract_low_bits(uint32_t value, uint32_t bits, uint32_t signed_value)
     return 0 != signed_value && 0 != (value & (1U << (bits - 1U))) ? value | ~mask : value;
 }
 
+static uint32_t
+packed_dot(uint32_t                        first,
+           uint32_t                        second,
+           uint32_t                        accumulator,
+           const gpu_shader_instruction_t *instruction)
+{
+    const uint32_t two     = GPU_SHADER_IDP2 == instruction->operation;
+    const uint32_t count   = 0 != two ? 2U : 4U;
+    const uint32_t width   = 0 != two ? 16U : 8U;
+    const uint32_t modulus = 1U << width;
+    uint32_t       result  = accumulator;
+    for (uint32_t element = 0; element < count; ++element)
+    {
+        const uint32_t first_bits = (first >> (width * element)) & (modulus - 1U);
+        const uint32_t second_bits
+            = (second >> (8U * (element + 2U * instruction->dot_high))) & 255U;
+        const int32_t first_value
+            = (int32_t)first_bits
+              - (0 != instruction->dot_signed[0] && first_bits >= modulus / 2U ? (int32_t)modulus
+                                                                               : 0);
+        const int32_t second_value
+            = (int32_t)second_bits
+              - (0 != instruction->dot_signed[1] && second_bits >= 128U ? 256 : 0);
+        result += (uint32_t)(first_value * second_value);
+    }
+    return result;
+}
+
+static uint64_t
+multiply_integer(uint32_t first, uint32_t second, uint32_t signed_value)
+{
+    if (0 == signed_value)
+    {
+        return (uint64_t)first * second;
+    }
+    const int64_t first_value
+        = (int64_t)first - (0 != (first & 0x80000000U) ? INT64_C(0x100000000) : 0);
+    const int64_t second_value
+        = (int64_t)second - (0 != (second & 0x80000000U) ? INT64_C(0x100000000) : 0);
+    return (uint64_t)(first_value * second_value);
+}
+
 error_t
 gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32_t budget)
 {
@@ -607,6 +681,7 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
         {
             uint32_t       value                = 0;
             uint32_t       predicate_results[2] = { 0 };
+            uint64_t       wide_result          = 0;
             const uint32_t complement           = GPU_SHADER_POPC == instruction.operation
                                         || GPU_SHADER_FLO == instruction.operation
                                         || ((GPU_SHADER_IADD3 == instruction.operation
@@ -650,7 +725,26 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                     break;
                 }
                 case GPU_SHADER_IMAD:
-                    value = first * second + third;
+                    if (GPU_SHADER_MULTIPLY_LOW == instruction.multiply_mode)
+                    {
+                        value = first * second + third;
+                    }
+                    else
+                    {
+                        const uint32_t accumulator = instruction.sources[2].value;
+                        const uint32_t upper       = GPU_SHADER_ZERO_REGISTER == accumulator
+                                                         ? 0
+                                                         : lane->registers[accumulator + 1U];
+                        wide_result = multiply_integer(first, second, instruction.compare_signed)
+                                      + ((uint64_t)third | ((uint64_t)upper << 32U));
+                        value = (uint32_t)(GPU_SHADER_MULTIPLY_HIGH == instruction.multiply_mode
+                                               ? wide_result >> 32U
+                                               : wide_result);
+                    }
+                    break;
+                case GPU_SHADER_IDP4:
+                case GPU_SHADER_IDP2:
+                    value = packed_dot(first, second, third, &instruction);
                     break;
                 case GPU_SHADER_LEA: {
                     const uint32_t shifted
@@ -816,6 +910,11 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                 && GPU_SHADER_ZERO_REGISTER != instruction.destination)
             {
                 lane->registers[instruction.destination] = value;
+                if (GPU_SHADER_IMAD == instruction.operation
+                    && GPU_SHADER_MULTIPLY_WIDE == instruction.multiply_mode)
+                {
+                    lane->registers[instruction.destination + 1U] = (uint32_t)(wide_result >> 32U);
+                }
             }
         }
         pc = next;

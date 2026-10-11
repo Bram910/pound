@@ -31,6 +31,8 @@ typedef enum
     GPU_SHADER_SGXT,
     GPU_SHADER_BMSK,
     GPU_SHADER_LEA,
+    GPU_SHADER_IDP4,
+    GPU_SHADER_IDP2,
 } gpu_shader_operation_t;
 
 typedef enum
@@ -77,6 +79,13 @@ typedef enum
     GPU_SHADER_SOURCE_IMMEDIATE,
 } gpu_shader_source_kind_t;
 
+typedef enum
+{
+    GPU_SHADER_MULTIPLY_LOW,
+    GPU_SHADER_MULTIPLY_WIDE,
+    GPU_SHADER_MULTIPLY_HIGH,
+} gpu_shader_multiply_t;
+
 typedef struct
 {
     gpu_shader_source_kind_t kind;
@@ -108,6 +117,9 @@ typedef struct
     uint32_t                  address_shift;
     uint32_t                  intermediate_negate;
     uint32_t                  carry_in;
+    uint32_t                  dot_signed[2];
+    uint32_t                  dot_high;
+    gpu_shader_multiply_t     multiply_mode;
     gpu_shader_permute_mode_t permute_mode;
     uint32_t                  predicate_destinations[2];
     uint32_t                  predicate_sources[3];
