@@ -301,8 +301,14 @@ def update_readme(arm_line):
 {arm_line}
 
 GPU shader translation (SM86 to SPIR-V) and Horizon OS services are not started yet.
-A [GPU command frontend and inspection tool](docs/GPU_DEVELOPMENT.md) are now available;
-command decoding is separate from shader translation and rendering.
+[GPU memory mappings, command execution and replay tools](docs/GPU_DEVELOPMENT.md)
+support software DMA copies, opt-in Tegra/Turing tiled layouts, 3D slice
+transfers, component remapping, pitched/tiled fills, inline uploads, bounded
+GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
+semaphore acquires, reductions and timestamped completion records. Shader translation
+and rendering remain separate, unimplemented stages.
+An experimental 19-family SM86 integer decoder and bounded single-lane reference executor
+are available; this is not SPIR-V translation or game rendering.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 {MARK_END}"""
     text = README.read_text(encoding="utf-8")

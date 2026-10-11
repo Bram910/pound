@@ -175,6 +175,15 @@ else ()
 endif ()
 add_library(PoundCore ${POUND_CORE_LIBRARY_TYPE}
         src/core/gpu/gpu_pushbuffer.c
+        src/core/gpu/gpu_memory.c
+        src/core/gpu/gpu_surface.c
+        src/core/gpu/gpu_semaphore.c
+        src/core/gpu/gpu_inline.c
+        src/core/gpu/gpu_copy.c
+        src/core/gpu/gpu_channel.c
+        src/core/gpu/gpu_queue.c
+        src/core/gpu/gpu_scheduler.c
+        src/core/gpu/gpu_shader.c
         src/core/memory/memory.c
         src/core/memory/guest_memory.c
         src/core/guest_state.c
@@ -191,13 +200,60 @@ add_compiler_flags(PoundCore)
 add_linker_flags(PoundCore)
 add_sanitizers(PoundCore)
 
-option(POUND_BUILD_GPU_TOOLS "Build GPU command inspection tools" OFF)
+option(POUND_BUILD_GPU_TOOLS "Build GPU command tracing and replay tools" OFF)
 if (POUND_BUILD_GPU_TOOLS)
+    add_executable(PoundGpuShader tools/gpu/shader.c src/core/gpu/gpu_shader.c)
+    target_include_directories(PoundGpuShader PRIVATE src/core)
+    add_compiler_flags(PoundGpuShader)
+    add_linker_flags(PoundGpuShader)
+    add_sanitizers(PoundGpuShader)
     add_executable(PoundGpuTrace tools/gpu/trace.c src/core/gpu/gpu_pushbuffer.c)
     target_include_directories(PoundGpuTrace PRIVATE src/core)
     add_compiler_flags(PoundGpuTrace)
     add_linker_flags(PoundGpuTrace)
     add_sanitizers(PoundGpuTrace)
+    add_executable(PoundGpuReplay
+            tools/gpu/replay.c
+            src/core/gpu/gpu_pushbuffer.c
+            src/core/gpu/gpu_memory.c
+            src/core/gpu/gpu_surface.c
+            src/core/gpu/gpu_semaphore.c
+            src/core/gpu/gpu_inline.c
+            src/core/gpu/gpu_copy.c
+            src/core/gpu/gpu_channel.c)
+    add_executable(PoundGpuQueueDemo
+            tools/gpu/queue_demo.c
+            src/core/gpu/gpu_pushbuffer.c
+            src/core/gpu/gpu_memory.c
+            src/core/gpu/gpu_surface.c
+            src/core/gpu/gpu_semaphore.c
+            src/core/gpu/gpu_inline.c
+            src/core/gpu/gpu_copy.c
+            src/core/gpu/gpu_channel.c
+            src/core/gpu/gpu_queue.c)
+    target_include_directories(PoundGpuQueueDemo PRIVATE src/core)
+    add_compiler_flags(PoundGpuQueueDemo)
+    add_linker_flags(PoundGpuQueueDemo)
+    add_sanitizers(PoundGpuQueueDemo)
+    add_executable(PoundGpuSchedulerDemo
+            tools/gpu/scheduler_demo.c
+            src/core/gpu/gpu_pushbuffer.c
+            src/core/gpu/gpu_memory.c
+            src/core/gpu/gpu_surface.c
+            src/core/gpu/gpu_semaphore.c
+            src/core/gpu/gpu_inline.c
+            src/core/gpu/gpu_copy.c
+            src/core/gpu/gpu_channel.c
+            src/core/gpu/gpu_queue.c
+            src/core/gpu/gpu_scheduler.c)
+    target_include_directories(PoundGpuSchedulerDemo PRIVATE src/core)
+    add_compiler_flags(PoundGpuSchedulerDemo)
+    add_linker_flags(PoundGpuSchedulerDemo)
+    add_sanitizers(PoundGpuSchedulerDemo)
+    target_include_directories(PoundGpuReplay PRIVATE src/core)
+    add_compiler_flags(PoundGpuReplay)
+    add_linker_flags(PoundGpuReplay)
+    add_sanitizers(PoundGpuReplay)
 endif ()
 
 message(STATUS "[PoundGUI] Configuring Pound GUI Library...")
