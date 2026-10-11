@@ -1,4 +1,5 @@
 #include "gpu/gpu_shader.h"
+#include "gpu/gpu_shader_spirv.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -236,7 +237,55 @@ analyze_shader(const gpu_shader_program_t *program)
 }
 
 static int
-prepare_shader(const uint8_t *bytes, size_t size, uint32_t budget, uint32_t analyze)
+write_spirv(const gpu_shader_program_t *program, const char *path)
+{
+    size_t  count;
+    error_t status = gpu_shader_spirv_emit(program, NULL, 0, &count);
+    if (POUND_SUCCESS != status)
+    {
+        fprintf(stderr, "SPIR-V emission error %d\n", (int)status);
+        return 1;
+    }
+    uint32_t *words = malloc(count * sizeof(*words));
+    if (NULL == words)
+    {
+        return 1;
+    }
+    status       = gpu_shader_spirv_emit(program, words, count, &count);
+    FILE *output = POUND_SUCCESS == status ? fopen(path, "wb") : NULL;
+    int   result = 1;
+    if (NULL != output)
+    {
+        result               = 0;
+        const uint32_t *word = words;
+        for (size_t index = 0; index < count; ++index, ++word)
+        {
+            const uint8_t bytes[4] = { (uint8_t)*word,
+                                       (uint8_t)(*word >> 8U),
+                                       (uint8_t)(*word >> 16U),
+                                       (uint8_t)(*word >> 24U) };
+            if (sizeof(bytes) != fwrite(bytes, 1, sizeof(bytes), output))
+            {
+                result = 1;
+                break;
+            }
+        }
+        if (0 != fclose(output))
+        {
+            result = 1;
+        }
+    }
+    free(words);
+    if (result)
+    {
+        fprintf(stderr, "Could not write SPIR-V output\n");
+    }
+    return result;
+}
+
+static int
+prepare_shader(
+    const uint8_t *bytes, size_t size, uint32_t budget, uint32_t analyze, const char *output)
 {
     const size_t count = size / GPU_SHADER_INSTRUCTION_SIZE;
     if (count > SHADER_TOOL_PROGRAM_LIMIT)
@@ -263,7 +312,9 @@ prepare_shader(const uint8_t *bytes, size_t size, uint32_t budget, uint32_t anal
     }
     else
     {
-        result = analyze ? analyze_shader(&program) : run_shader(bytes, size, budget, &program);
+        result = NULL != output ? write_spirv(&program, output)
+                 : analyze      ? analyze_shader(&program)
+                                : run_shader(bytes, size, budget, &program);
     }
     free(blocks);
     free(nodes);
@@ -276,13 +327,15 @@ main(int argc, char **argv)
     uint32_t       budget = 100000U;
     const uint32_t run
         = argc >= 2 && (0 == strcmp(argv[1], "run") || 0 == strcmp(argv[1], "run-prepared"));
+    const uint32_t spirv = argc >= 2 && 0 == strcmp(argv[1], "spirv");
     if (argc < 3 || argc > 4
-        || (!run && 0 != strcmp(argv[1], "trace") && 0 != strcmp(argv[1], "analyze"))
-        || (4 == argc && (!run || 0 != parse_budget(argv[3], &budget))))
+        || (!run && !spirv && 0 != strcmp(argv[1], "trace") && 0 != strcmp(argv[1], "analyze"))
+        || (spirv && argc != 4)
+        || (4 == argc && !spirv && (!run || 0 != parse_budget(argv[3], &budget))))
     {
         fprintf(stderr,
                 "Usage: %s trace|analyze <raw-sm86.bin> | run|run-prepared <raw-sm86.bin> "
-                "[budget=1..1000000]\n",
+                "[budget=1..1000000] | spirv <raw-sm86.bin> <output.spv>\n",
                 argv[0]);
         return 1;
     }
@@ -303,7 +356,8 @@ main(int argc, char **argv)
     }
     else
     {
-        result = prepare_shader(bytes, size, budget, 0 == strcmp(argv[1], "analyze"));
+        result = prepare_shader(
+            bytes, size, budget, 0 == strcmp(argv[1], "analyze"), spirv ? argv[3] : NULL);
     }
     free(bytes);
     return result;

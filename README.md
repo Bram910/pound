@@ -33,17 +33,19 @@ DEVELOPER PLEASE GIVE US YOUR SUPPORT**
 
 * ARM64: share of the 3856 A64 encodings in Ballistic's decoder table that its x86 tier-1 compiler can run (54 run, 201 decoded only, 3601 not started). Ballistic commit `9db2adab`.
 
-GPU shader translation (SM86 to SPIR-V) and Horizon OS services are not started yet.
+Horizon OS services and production GPU rendering are not implemented yet.
 [GPU memory mappings, command execution and replay tools](docs/GPU_DEVELOPMENT.md)
 support software DMA copies, opt-in Tegra/Turing tiled layouts, 3D slice
 transfers, component remapping, pitched/tiled fills, inline uploads, bounded
 GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
-semaphore acquires, reductions and timestamped completion records. Shader translation
-and rendering remain separate, unimplemented stages.
+semaphore acquires, reductions and timestamped completion records.
 An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
 are available, including multiword comparisons, logic-generated predicates,
-decode-once prepared programs and structural control-flow analysis;
-this is not SPIR-V translation or game rendering.
+decode-once prepared programs and structural control-flow analysis.
+An experimental 13-family straight-line integer SPIR-V emitter has been checked
+with Khronos validation and independent-lane Vulkan dispatch on an RTX 3080;
+it is not connected to guest submissions or game rendering. The shader badge
+indicates prototype status, not a percentage of full GPU compatibility.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 <!-- POUND-STATUS:END -->
 

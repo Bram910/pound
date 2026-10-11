@@ -4,10 +4,11 @@
 operations, bounded GPFIFO queues, cooperative multi-channel scheduling,
 inline uploads and a software implementation
 of the Ampere DMA copy engine. Commands
-can read and write mapped GPU memory. Shader translation and rendering are still
+can read and write mapped GPU memory. Production rendering is still
 unimplemented; no guest OS GPU submission service is connected yet. A separate
 experimental SM86 integer shader decoder and single-lane reference executor are
-available for developing the shader frontend.
+available for developing the shader frontend, with an experimental straight-line
+integer SPIR-V emitter for a smaller subset.
 
 ## Supported command formats
 
@@ -736,8 +737,9 @@ Candidate encodings are disassembled before submission; only arithmetic and
 predicate-comparison slots are replaced, leaving private addressing and stores
 unchanged. These results do not validate warp control flow or rendering.
 
-This is not a warp interpreter, SPIR-V translator, Vulkan shader dispatch or
-proof of game compatibility. No
+The reference executor is not a warp interpreter, SPIR-V translator, Vulkan
+shader dispatch or proof of game compatibility. The separate emitter below
+does not change that scope. No
 shader-translation percentage is assigned from these prototype results.
 
 ## Prepared shader programs and control flow
@@ -746,8 +748,9 @@ shader-translation percentage is assigned from these prototype results.
 `gpu_shader_node_t` storage and builds `gpu_shader_block_t` control-flow records.
 After whole-program validation, it stores decoded instructions for subsequent
 execution rather than decoding every loop iteration.
-This is a reusable frontend representation for a future compiler, **not** x86
-machine-code emission, SPIR-V generation or host-GPU execution.
+This is a reusable frontend representation for the experimental emitter below,
+**not** x86 machine-code emission. Preparation itself does not generate SPIR-V
+or execute on the host GPU.
 
 The caller supplies node and block arrays, each with capacity for the raw
 instruction count, plus a program descriptor. This conservative capacity contract
@@ -803,11 +806,85 @@ compares final raw/prepared states and executes five million guest instructions;
 preparation is outside the timed interval. These are synthetic CPU interpreter
 measurements, **not** GPU shader throughput, game frame rates or a JIT benchmark.
 
+## Experimental integer SPIR-V emission
+
+`gpu_shader_spirv_emit` lowers an immutable, successfully prepared program into
+a SPIR-V 1.3 compute module for Vulkan 1.1. This is the first host-GPU shader
+translation step, separate from the command engines and production rendering.
+The core emits words without depending on a Vulkan loader or allocating memory.
+
+The accepted straight-line subset is MOV, unmodified non-.X IADD3 (including
+both carry outputs), IMAD.LOW, LOP3, POPC, SEL, ISETP (including .EX), PLOP3,
+IMNMX, BREV, IABS, NOP and EXIT: 13 instruction families, not all variants of
+those families. Register/immediate operands, RZ/PT, execution predication,
+source/destination aliasing and dual predicate outputs retain the reference
+semantics. Integer overflow wraps at 32 bits, including IABS of INT_MIN.
+
+Programs must end with a single unpredicated EXIT and contain at most 1,024
+instructions including that EXIT. Branches, early/predicated exits, missing
+exits, modified/.X IADD3, wide/high IMAD and all other instruction families
+are rejected even if predication would skip them. There is no branch lowering,
+warp synchronization, guest memory access, floating point, texture access,
+shader-header parsing, graphics-stage input/output or rendering integration.
+
+Pass `words = NULL, capacity = 0` to query the required word count, then pass
+caller-owned writable word storage with that capacity. Invalid arguments,
+unsupported programs and insufficient capacity preserve both the output
+buffer and `word_count`. The prepared descriptor and its storage must remain
+valid and unchanged during both calls; output storage and `word_count` must
+not overlap each other or the prepared program/storage. Successful emission
+returns host-endian uint32 words; the CLI serializes them little-endian.
+
+### Private compute buffer ABI
+
+The module exposes compute entry point `main` with local size `(1, 1, 1)` and
+one writable storage buffer at descriptor set 0, binding 0. Each lane occupies
+256 uint32 words (1,024 bytes): words 0–254 are R0–R254; word 255 is the packed
+P0–P6 predicate mask, whose input must be in 0–127. RZ and PT have no storage.
+The module loads that state, executes the whole program and writes back the
+registers and predicate mask. PC, budget, step count and halted state are not
+part of this private ABI; the final EXIT is validated statically.
+
+`GlobalInvocationId.x` selects a lane record. A host harness must dispatch
+exactly `(lane_count, 1, 1)` workgroups, bind at least `lane_count * 1,024`
+bytes and satisfy Vulkan's device dispatch/storage-buffer limits and host/GPU
+memory visibility rules. There is no lane-count bounds check in the module.
+Extra Y/Z workgroups would race on the same records. This ABI is for bounded,
+independent-lane development checks, not a guest compute launch or SIMT model.
+
+### Emission tools and checks
+
+```sh
+PoundGpuShader spirv raw-sm86.bin output.spv
+spirv-val --target-env vulkan1.1 output.spv
+python tools/gpu/make_shader_spirv_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe --spirv-val /path/to/spirv-val
+```
+
+The synthetic demo emits all 13 families, checks an independently specified
+reference result and produces `integer-compute.bin`, `integer-compute.spv`,
+`lane-input.bin`, `lane-expected.bin` and `spirv-report.json` under
+`build/gpu-shader-spirv-demo`. Without `--spirv-val` it explicitly reports
+that Khronos validation was not checked. The CLI and demo do not create a
+Vulkan device or dispatch work; validate modules before using an external
+compute harness. Unsupported emission does not open/truncate the output file.
+
+Development checks validate generated modules with Khronos `spirv-val` before
+dispatching them in a private Vulkan harness on an NVIDIA GeForce RTX 3080.
+Across 61 programs, all 124,928 lane states (31,981,568 uint32 words) agree;
+the same number also passes on Mesa's software Vulkan implementation using
+Clang-emitted modules, separately from the hardware check.
+They compare all 255 registers and the predicate mask against Pound's CPU
+reference, with boundary/random inputs, all 128 starting predicate masks,
+comparison modes and all 256 LOP3 truth tables. Capacity/limit/error preservation
+and deterministic emission are also checked natively and with ASan/UBSan.
+These are synthetic integer compute checks, not measurements of game FPS,
+rendering correctness or a percentage of full shader compatibility.
+
 ## Next layers
 
 1. Connect GPU mappings and channel submission to guest OS services.
 2. Extend copy layouts, synchronization and engine method coverage.
-3. Extend the SM86 shader subset and add SPIR-V generation.
+3. Extend the SM86/SPIR-V subsets, branch lowering and graphics-stage interfaces.
 4. Vulkan resource management, draws, compute and presentation.
 
 Command parsing alone does not establish Switch 2 compatibility or a GPU
@@ -830,3 +907,6 @@ captured game submissions.
 - [NVIDIA PTX byte permutation semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-prmt)
 - [NVIDIA PTX packed byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp4a)
 - [NVIDIA PTX packed halfword/byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp2a)
+- [Khronos SPIR-V specification](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
+- [Khronos SPIR-V core instruction grammar](https://github.com/KhronosGroup/SPIRV-Headers/blob/main/include/spirv/unified1/spirv.core.grammar.json)
+- [Khronos SPIRV-Tools validator](https://github.com/KhronosGroup/SPIRV-Tools)

@@ -185,6 +185,7 @@ add_library(PoundCore ${POUND_CORE_LIBRARY_TYPE}
         src/core/gpu/gpu_scheduler.c
         src/core/gpu/gpu_shader.c
         src/core/gpu/gpu_shader_program.c
+        src/core/gpu/gpu_shader_spirv.c
         src/core/memory/memory.c
         src/core/memory/guest_memory.c
         src/core/guest_state.c
@@ -203,7 +204,11 @@ add_sanitizers(PoundCore)
 
 option(POUND_BUILD_GPU_TOOLS "Build GPU command tracing and replay tools" OFF)
 if (POUND_BUILD_GPU_TOOLS)
-    add_executable(PoundGpuShader tools/gpu/shader.c src/core/gpu/gpu_shader.c src/core/gpu/gpu_shader_program.c)
+    add_executable(PoundGpuShader
+        tools/gpu/shader.c
+        src/core/gpu/gpu_shader.c
+        src/core/gpu/gpu_shader_program.c
+        src/core/gpu/gpu_shader_spirv.c)
     target_include_directories(PoundGpuShader PRIVATE src/core)
     add_compiler_flags(PoundGpuShader)
     add_linker_flags(PoundGpuShader)

@@ -300,17 +300,19 @@ def update_readme(arm_line):
 
 {arm_line}
 
-GPU shader translation (SM86 to SPIR-V) and Horizon OS services are not started yet.
+Horizon OS services and production GPU rendering are not implemented yet.
 [GPU memory mappings, command execution and replay tools](docs/GPU_DEVELOPMENT.md)
 support software DMA copies, opt-in Tegra/Turing tiled layouts, 3D slice
 transfers, component remapping, pitched/tiled fills, inline uploads, bounded
 GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
-semaphore acquires, reductions and timestamped completion records. Shader translation
-and rendering remain separate, unimplemented stages.
+semaphore acquires, reductions and timestamped completion records.
 An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
 are available, including multiword comparisons, logic-generated predicates,
-decode-once prepared programs and structural control-flow analysis;
-this is not SPIR-V translation or game rendering.
+decode-once prepared programs and structural control-flow analysis.
+An experimental 13-family straight-line integer SPIR-V emitter has been checked
+with Khronos validation and independent-lane Vulkan dispatch on an RTX 3080;
+it is not connected to guest submissions or game rendering. The shader badge
+indicates prototype status, not a percentage of full GPU compatibility.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 {MARK_END}"""
     text = README.read_text(encoding="utf-8")
@@ -350,9 +352,9 @@ def main():
     for fname, left, frac in (
         ("badge_cpu.svg", "ARM64", st[RUNS] / n),
         ("badge_ir.svg", "IR to x86", ir_done / len(ir_ops)),
-        ("badge_gpu.svg", "shaders", 0.0),
     ):
         (OUT_DIR / fname).write_text(badge(left, f"{100 * frac:.2f}%", badge_color(frac)), encoding="utf-8")
+    (OUT_DIR / "badge_gpu.svg").write_text(badge("shaders", "prototype", "#bf8700"), encoding="utf-8")
 
     arm_line = (
         f"* ARM64: share of the {n} A64 encodings in Ballistic's decoder table that its x86 tier-1 "
