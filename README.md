@@ -41,7 +41,8 @@ GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
 semaphore acquires, reductions and timestamped completion records. Shader translation
 and rendering remain separate, unimplemented stages.
 An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
-are available; this is not SPIR-V translation or game rendering.
+are available, including multiword comparisons and logic-generated predicates;
+this is not SPIR-V translation or game rendering.
 Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 <!-- POUND-STATUS:END -->
 

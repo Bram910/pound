@@ -439,10 +439,10 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | IMAD | Low 32-bit result with register/immediate multiplicand/addend; signed/unsigned .WIDE and .HI with register-pair accumulator and register/immediate multiplicand |
 | IDP.4A | Four packed 8-bit products accumulated modulo 32 bits, independently signed/unsigned multiplicands, register inputs |
 | IDP.2A | Two packed 16-bit-by-8-bit products accumulated modulo 32 bits, independent signedness, low/high byte-pair selection, register inputs |
-| LOP3.LUT | GPR/immediate middle operand, all 256 truth tables, discarded predicate output |
+| LOP3.LUT | GPR/immediate middle operand, all 256 truth tables, nonzero-result predicate combined with an input using OR or PAND |
 | POPC | GPR/immediate, optional register complement |
 | SEL | GPR/immediate alternatives and predicate condition |
-| ISETP | Signed/unsigned 32-bit comparisons, AND/OR/XOR predicate combination, two predicate outputs |
+| ISETP | Signed/unsigned comparisons, .EX low-comparison chaining for multiword integers, AND/OR/XOR predicate combination, two outputs |
 | PLOP3.LUT | Three optionally inverted predicates, two independent 8-bit truth tables and predicate outputs |
 | IMNMX | Signed/unsigned 32-bit min/max selected by a predicate, GPR/immediate middle operand |
 | BREV | Full 32-bit reversal, GPR/immediate |
@@ -468,14 +468,27 @@ Decoder failures leave the output structure unchanged.
 ISETP supports F, LT, EQ, LE, GT, NE, GE and T. Its first predicate result is
 the comparison combined with the input predicate; its second combines the
 **complement of the comparison** with that same input, not the complement of
-the already-combined first output. `.EX`, uniform/constant-buffer inputs and
-noncanonical low-comparison predicate fields are rejected. PLOP3 supports
+the already-combined first output. `.EX` selects an additional low-comparison
+predicate when the two 32-bit inputs are equal; F and T remain constant even
+on equality. A low-word unsigned comparison followed by the matching high-word
+`.EX` comparison implements a 64-bit comparison, with signedness determined by
+the high word. The low-comparison and accumulator predicates can alias either
+output and may be independently inverted. Plain ISETP still requires canonical
+PT/!PT low-comparison fields. Uniform/constant-buffer inputs remain unsupported.
+PLOP3 supports
 ordinary P0–P6/PT sources, not uniform predicates. Both families capture all
 inputs, including execution predication, before updating either output. PT
 discards predicate writes and remains true. Two equal writable predicate
 destinations are deliberately unsupported rather than assigning an unverified
 write order. ISETP and PLOP3 have no GPR destination; LEA and IADD3 can update
 a GPR and predicates together, including a discarded RZ destination.
+
+LOP3 computes its 32-bit truth-table result before writing the GPR or predicate.
+The predicate output combines `result != 0` with its optionally inverted input:
+plain LOP3 uses OR, while `.PAND` uses AND. Discarding the GPR through RZ does
+not discard the predicate result; PT discards only the predicate write.
+Predicate input/output aliases use the original input value. Quad/uniform
+variants and unknown semantic fields remain explicitly unsupported.
 
 LEA shifts its low source left by an encoded distance of 0–31 before adding
 the addend. LEA.HI instead extracts the high 32 bits of the shifted low/high
@@ -589,6 +602,7 @@ python tools/gpu/make_shader_bits_demo.py --shader-tool build/gcc/bin/windows/Po
 python tools/gpu/make_shader_extract_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_address_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_dot_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
+python tools/gpu/make_shader_compare_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 ```
 
 Trace emits one JSON object per instruction, retaining the raw words. The run
@@ -597,6 +611,9 @@ The `predicates` integer is a bit mask of P0–P6 (bit 7/PT is never stored).
 Trace comparison values are 0=F, 1=LT, 2=EQ, 3=LE, 4=GT, 5=NE, 6=GE, 7=T;
 boolean-operation values are 0=AND, 1=OR, 2=XOR. Predicate input/output arrays
 describe predicate-writing instructions separately from their GPR operands.
+`compare_extended` exposes ISETP.EX; its predicate inputs are the accumulator
+followed by the low comparison. LOP3's `boolean_operation` describes its
+nonzero-result/input combination, independently of the GPR truth-table lookup.
 Trace shift types are 0=S64, 1=U64, 2=S32, 3=U32. The `shift_right`,
 `shift_wrap`, `shift_high` and `return_shift` fields expose the checked modes.
 `shift_wrap` also describes SGXT/BMSK wrapping; `compare_signed` selects signed
@@ -649,7 +666,14 @@ predication. It writes `dot-report.json` under `build/gpu-shader-dot-demo` and
 supports the same optional nvdisasm check. Like the other durable demos, it
 runs the single-lane executor, not a graphics dispatch.
 
-This frontend has been checked against 60,000 synthetic encodings using NVIDIA's
+The comparison demo checks 12 signed/unsigned multiword boundary programs and
+16 logic-predicate programs. It covers every comparison and boolean combination,
+both outputs, low/accumulator/output predicate aliases, all 256 LOP3 tables,
+OR/PAND, input inversion and discarded GPR writes. It writes
+`compare-report.json` under `build/gpu-shader-compare-demo` and supports the
+same optional nvdisasm check.
+
+This frontend has been checked against 70,000 synthetic encodings using NVIDIA's
 SM86 disassembler, including operand order, immediates, negation, execution
 predicates, comparison modes, predicate outputs, both PLOP3 tables and branch
 targets. Additional scalar checks cover 100,000 new-family programs, all 65,536
@@ -668,6 +692,10 @@ Packed/wide arithmetic adds 100,000 randomized programs and all 262,144 byte
 pair/signedness combinations, using independent scalar calculations and
 bit-by-bit multiplication, checked natively and with ASan/UBSan. These also
 check 64-bit register aliases, budget resumption and malformed-state preservation.
+Multiword comparisons and logic predicates add another 100,000 randomized
+programs with independent calculations, including equality ties, predicate/GPR
+aliases, predicated-off instructions, resumable budgets and rejection-state
+preservation, checked natively and with ASan/UBSan.
 
 Separate development probes also compared Pound's SHF/FLO/PRMT/SGXT/BMSK results
 directly against 413,696 cases on an NVIDIA GeForce RTX 3080. Those probes replace only
@@ -695,6 +723,15 @@ overflow boundaries, source/destination aliases and discarded RZ writes.
 Only arithmetic instructions are replaced in private, bounded CUDA kernels;
 input/output addressing and stores remain unchanged. Candidate encodings are
 checked by nvdisasm before GPU submission. CUDA remains development-only.
+
+ISETP.EX and logic-predicate probes add 7,340,032 hardware comparisons across
+7,168 variants on the RTX 3080. They cover all comparison/boolean modes,
+signedness, equality ties, both outputs, constant and inverted predicate inputs,
+input/output aliases, all 256 LOP3 truth tables, OR/PAND and register/immediate
+operands. Results agree with independent calculations and Pound's executor.
+Candidate encodings are disassembled before submission; only arithmetic and
+predicate-comparison slots are replaced, leaving private addressing and stores
+unchanged. These results do not validate warp control flow or rendering.
 
 This is not a warp interpreter, SPIR-V translator, Vulkan shader dispatch or
 proof of game compatibility. No

@@ -109,6 +109,7 @@ typedef struct
     gpu_shader_comparison_t   comparison;
     gpu_shader_boolean_t      boolean_operation;
     uint32_t                  compare_signed;
+    uint32_t                  compare_extended;
     gpu_shader_shift_type_t   shift_type;
     uint32_t                  shift_right;
     uint32_t                  shift_wrap;

@@ -249,13 +249,20 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             }
             break;
         case 0x012U:
-            if (0x078E0000U != (third & ~0xFFFFU))
+            if (0 != (third & ~0x078FFFFFU))
             {
                 return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
             }
             decoded.operation    = GPU_SHADER_LOP3;
             decoded.lookup       = (third >> 8U) & 255U;
             decoded.source_count = 3U;
+            decoded.boolean_operation
+                = 0 != (third & 0x10000U) ? GPU_SHADER_BOOLEAN_AND : GPU_SHADER_BOOLEAN_OR;
+            decoded.predicate_destinations[0]   = (third >> 17U) & 7U;
+            decoded.predicate_destination_count = 1U;
+            decoded.predicate_sources[0]        = decoded.condition;
+            decoded.predicate_source_inverts[0] = decoded.condition_invert;
+            decoded.predicate_source_count      = 1U;
             break;
         case 0x007U:
             if (0 != (third & ~0x07800000U))
@@ -266,8 +273,9 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             decoded.source_count = 2U;
             break;
         case 0x00CU:
-            if (0 != (first & 0x00FF0000U) || 0 != (third & ~0x07FE7EF0U)
-                || 0x70U != (third & 0x70U) || 3U == ((third >> 10U) & 3U))
+            if (0 != (first & 0x00FF0000U) || 0 != (third & ~0x07FE7FF0U)
+                || (0 == (third & 0x100U) && 0x70U != (third & 0x70U))
+                || 3U == ((third >> 10U) & 3U))
             {
                 return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
             }
@@ -276,10 +284,17 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             decoded.comparison                  = (gpu_shader_comparison_t)((third >> 12U) & 7U);
             decoded.boolean_operation           = (gpu_shader_boolean_t)((third >> 10U) & 3U);
             decoded.compare_signed              = (third >> 9U) & 1U;
+            decoded.compare_extended            = (third >> 8U) & 1U;
             decoded.source_count                = 2U;
             decoded.predicate_sources[0]        = decoded.condition;
             decoded.predicate_source_inverts[0] = decoded.condition_invert;
             decoded.predicate_source_count      = 1U;
+            if (0 != decoded.compare_extended)
+            {
+                decoded.predicate_sources[1]        = (third >> 4U) & 7U;
+                decoded.predicate_source_inverts[1] = (third >> 7U) & 1U;
+                decoded.predicate_source_count      = 2U;
+            }
             decoded.predicate_destination_count = 2U;
             decoded.predicate_destinations[0]   = (third >> 17U) & 7U;
             decoded.predicate_destinations[1]   = (third >> 20U) & 7U;
@@ -779,6 +794,12 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                                                | ((third >> bit) & 1U);
                         value |= ((instruction.lookup >> index) & 1U) << bit;
                     }
+                    predicate_results[0] = combine_predicates(
+                        0 != value,
+                        predicate_value(lane,
+                                        instruction.predicate_sources[0],
+                                        instruction.predicate_source_inverts[0]),
+                        instruction.boolean_operation);
                     break;
                 case GPU_SHADER_POPC:
                     for (uint32_t remaining = first; 0 != remaining; remaining &= remaining - 1U)
@@ -832,7 +853,15 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                                 : second;
                     break;
                 case GPU_SHADER_ISETP: {
-                    const uint32_t comparison = compare_integer(first, second, &instruction);
+                    uint32_t comparison = compare_integer(first, second, &instruction);
+                    if (0 != instruction.compare_extended && first == second
+                        && GPU_SHADER_COMPARE_FALSE != instruction.comparison
+                        && GPU_SHADER_COMPARE_TRUE != instruction.comparison)
+                    {
+                        comparison = predicate_value(lane,
+                                                     instruction.predicate_sources[1],
+                                                     instruction.predicate_source_inverts[1]);
+                    }
                     const uint32_t condition
                         = predicate_value(lane,
                                           instruction.predicate_sources[0],
