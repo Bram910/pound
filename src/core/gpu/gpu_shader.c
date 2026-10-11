@@ -125,12 +125,14 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
     const uint32_t operation = opcode & 0x1FFU;
     const uint32_t form      = opcode >> 9U;
     if (1U != form && 4U != form
-        && !(2U == form && (0x24U == operation || 0x19U == operation || 0x16U == operation)))
+        && !(2U == form
+             && (0x24U == operation || 0x19U == operation || 0x16U == operation
+                 || 0x11U == operation)))
     {
         return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
     }
     const uint32_t source_modifiers
-        = 0x10U == operation || 0x109U == operation || 0x100U == operation;
+        = 0x10U == operation || 0x109U == operation || 0x100U == operation || 0x11U == operation;
     if (1U == form && 0 != (second & ~(0 != source_modifiers ? 0x800000FFU : 0xFFU)))
     {
         return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
@@ -161,14 +163,32 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             decoded.source_count = 1U;
             break;
         case 0x010U:
-            if (0x07FFE000U != (third & ~0x9FFU))
+            if (0 != (third & ~0x07FFEDFFU)
+                || (0 == (third & 0x400U) && 0x0781E000U != (third & 0x0781E000U)))
             {
                 return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
             }
-            decoded.operation         = GPU_SHADER_IADD3;
-            decoded.sources[0].negate = (third >> 8U) & 1U;
-            decoded.sources[2].negate = (third >> 11U) & 1U;
-            decoded.source_count      = 3U;
+            decoded.operation                   = GPU_SHADER_IADD3;
+            decoded.sources[0].negate           = (third >> 8U) & 1U;
+            decoded.sources[2].negate           = (third >> 11U) & 1U;
+            decoded.source_count                = 3U;
+            decoded.carry_in                    = (third >> 10U) & 1U;
+            decoded.predicate_destination_count = 2U;
+            decoded.predicate_destinations[0]   = (third >> 17U) & 7U;
+            decoded.predicate_destinations[1]   = (third >> 20U) & 7U;
+            if (decoded.predicate_destinations[0] == decoded.predicate_destinations[1]
+                && GPU_SHADER_TRUE_PREDICATE != decoded.predicate_destinations[0])
+            {
+                return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+            }
+            if (0 != decoded.carry_in)
+            {
+                decoded.predicate_sources[0]        = decoded.condition;
+                decoded.predicate_source_inverts[0] = decoded.condition_invert;
+                decoded.predicate_sources[1]        = (third >> 13U) & 7U;
+                decoded.predicate_source_inverts[1] = (third >> 16U) & 1U;
+                decoded.predicate_source_count      = 2U;
+            }
             break;
         case 0x024U:
             if (0x000E0000U != (third & ~0x2FFU))
@@ -177,6 +197,28 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
             }
             decoded.operation    = GPU_SHADER_IMAD;
             decoded.source_count = 3U;
+            break;
+        case 0x011U:
+            if (0 != (third & ~0x078FFDFFU) || (0 == (third & 0x400U) && 0 != (third & 0x07800000U))
+                || (0 == (third & 0x10000U) && (2U == form || 255U != (third & 255U)))
+                || (0 != (third & 0x100U) && 0 != middle.negate))
+            {
+                return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+            }
+            decoded.operation                   = GPU_SHADER_LEA;
+            decoded.address_shift               = (third >> 11U) & 31U;
+            decoded.intermediate_negate         = (third >> 8U) & 1U;
+            decoded.carry_in                    = (third >> 10U) & 1U;
+            decoded.shift_high                  = (third >> 16U) & 1U;
+            decoded.source_count                = 0 != decoded.shift_high ? 3U : 2U;
+            decoded.predicate_destinations[0]   = (third >> 17U) & 7U;
+            decoded.predicate_destination_count = 1U;
+            if (0 != decoded.carry_in)
+            {
+                decoded.predicate_sources[0]        = decoded.condition;
+                decoded.predicate_source_inverts[0] = decoded.condition_invert;
+                decoded.predicate_source_count      = 1U;
+            }
             break;
         case 0x012U:
             if (0x078E0000U != (third & ~0xFFFFU))
@@ -339,6 +381,8 @@ gpu_shader_operation_name(gpu_shader_operation_t operation)
             return "SGXT";
         case GPU_SHADER_BMSK:
             return "BMSK";
+        case GPU_SHADER_LEA:
+            return "LEA";
         default:
             return "UNKNOWN";
     }
@@ -563,23 +607,76 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
         {
             uint32_t       value                = 0;
             uint32_t       predicate_results[2] = { 0 };
-            const uint32_t first                = source_value(lane,
-                                                &instruction.sources[0],
-                                                GPU_SHADER_POPC == instruction.operation
-                                                    || GPU_SHADER_FLO == instruction.operation);
-            const uint32_t second               = source_value(lane, &instruction.sources[1], 0);
-            const uint32_t third                = source_value(lane, &instruction.sources[2], 0);
+            const uint32_t complement           = GPU_SHADER_POPC == instruction.operation
+                                        || GPU_SHADER_FLO == instruction.operation
+                                        || ((GPU_SHADER_IADD3 == instruction.operation
+                                             || GPU_SHADER_LEA == instruction.operation)
+                                            && 0 != instruction.carry_in);
+            const uint32_t first  = source_value(lane, &instruction.sources[0], complement);
+            const uint32_t second = source_value(lane, &instruction.sources[1], complement);
+            const uint32_t third  = source_value(lane, &instruction.sources[2], complement);
             switch (instruction.operation)
             {
                 case GPU_SHADER_MOV:
                     value = first;
                     break;
-                case GPU_SHADER_IADD3:
-                    value = first + second + third;
+                case GPU_SHADER_IADD3: {
+                    uint64_t sum = (uint64_t)first + second + third;
+                    if (0 != instruction.carry_in)
+                    {
+                        for (uint32_t index = 0; index < 2U; ++index)
+                        {
+                            sum += predicate_value(lane,
+                                                   instruction.predicate_sources[index],
+                                                   instruction.predicate_source_inverts[index]);
+                        }
+                    }
+                    else
+                    {
+                        const uint32_t             values[3] = { first, second, third };
+                        const uint32_t            *operand   = values;
+                        const gpu_shader_source_t *source    = instruction.sources;
+                        for (uint32_t index = 0; index < 3U; ++index, ++operand, ++source)
+                        {
+                            if (0 != source->negate && 0 == *operand)
+                            {
+                                sum += UINT64_C(1) << 32U;
+                            }
+                        }
+                    }
+                    value                = (uint32_t)sum;
+                    predicate_results[0] = sum >= (UINT64_C(1) << 32U);
+                    predicate_results[1] = sum >= (UINT64_C(2) << 32U);
                     break;
+                }
                 case GPU_SHADER_IMAD:
                     value = first * second + third;
                     break;
+                case GPU_SHADER_LEA: {
+                    const uint32_t shifted
+                        = 0 != instruction.shift_high
+                              ? (uint32_t)(((uint64_t)first | ((uint64_t)third << 32U))
+                                           >> (32U - instruction.address_shift))
+                              : first << instruction.address_shift;
+                    uint64_t sum = shifted;
+                    if (0 != instruction.intermediate_negate)
+                    {
+                        sum = (uint64_t)~shifted + (0 != instruction.carry_in ? 0U : 1U);
+                    }
+                    sum += second;
+                    if (0 != instruction.carry_in)
+                    {
+                        sum += predicate_value(
+                            lane, instruction.condition, instruction.condition_invert);
+                    }
+                    else if (0 != instruction.sources[1].negate && 0 == second)
+                    {
+                        sum += UINT64_C(1) << 32U;
+                    }
+                    value                = (uint32_t)sum;
+                    predicate_results[0] = sum > UINT32_MAX;
+                    break;
+                }
                 case GPU_SHADER_LOP3:
                     for (uint32_t bit = 0; bit < 32U; ++bit)
                     {
@@ -715,7 +812,7 @@ gpu_shader_run(gpu_shader_lane_t *lane, const void *program, size_t size, uint32
                 }
             }
             lane->predicates = predicates;
-            if (0 == instruction.predicate_destination_count && 0 != instruction.source_count
+            if (0 != instruction.source_count
                 && GPU_SHADER_ZERO_REGISTER != instruction.destination)
             {
                 lane->registers[instruction.destination] = value;

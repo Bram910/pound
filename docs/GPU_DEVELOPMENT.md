@@ -434,7 +434,8 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | Family | Checked subset |
 | --- | --- |
 | MOV | GPR or 32-bit immediate, full quad-lane mask |
-| IADD3 | GPR/immediate middle operand, integer negation, no carry/predicate outputs |
+| IADD3 | GPR/immediate middle operand, negation, dual carry outputs; .X complements and two predicate carry inputs |
+| LEA | Low/high shifted address arithmetic, register/immediate addend or immediate high source, negation, carry output and .X carry input |
 | IMAD | GPR or immediate multiplicand/addend, low 32-bit result |
 | LOP3.LUT | GPR/immediate middle operand, all 256 truth tables, discarded predicate output |
 | POPC | GPR/immediate, optional register complement |
@@ -453,8 +454,8 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | BRA | Relative aligned branch with predicate condition |
 | EXIT | Plain exit with instruction predication |
 
-Constant/uniform registers, constant buffers, carry outputs, alternate quad masks,
-floating point, memory/texture operations, extended arithmetic and other variants
+Constant/uniform registers, constant buffers, alternate quad masks,
+floating point, memory/texture operations and unchecked arithmetic variants
 fail explicitly. Unknown semantic fields are not silently discarded. The
 third-immediate IADD3 form is rejected: NVIDIA's SM86 disassembler does not
 recognize it, even though generic operand helpers can represent similar forms
@@ -471,7 +472,26 @@ ordinary P0–P6/PT sources, not uniform predicates. Both families capture all
 inputs, including execution predication, before updating either output. PT
 discards predicate writes and remains true. Two equal writable predicate
 destinations are deliberately unsupported rather than assigning an unverified
-write order. Predicate-writing instructions have no GPR destination.
+write order. ISETP and PLOP3 have no GPR destination; LEA and IADD3 can update
+a GPR and predicates together, including a discarded RZ destination.
+
+LEA shifts its low source left by an encoded distance of 0–31 before adding
+the addend. LEA.HI instead extracts the high 32 bits of the shifted low/high
+source pair. Low forms require the canonical RZ high-source field; .HI also
+supports an immediate high source. Negation applies to the extracted shifted
+value, not independently to the two source registers. LEA.X complements a
+modified input instead of negating it, then adds the predicate carry input.
+All predicate inputs, including execution predication, are captured before
+outputs change, so a carry input may alias its output.
+
+IADD3 has two carry outputs indicating sums of at least 2^32 and 2*2^32.
+Plain negation contributes the full unsigned complement plus one, including
+the carry from negating zero; merely adding already-truncated 32-bit operands
+would lose that carry. IADD3.X uses input complements and adds two independently
+inverted predicate inputs. LEA has one carry output. Both families reject
+simultaneous modification of the first and middle operands; two identical
+writable IADD3 predicate destinations are also unsupported. Immediate high
+bits remain payload, not register modifiers.
 
 IMNMX uses the minimum when its condition is true and the maximum otherwise.
 IABS of `0x80000000` remains `0x80000000`; it is not saturating. BREV reverses
@@ -516,7 +536,8 @@ Direct callers can supply GPR and P0–P6 inputs before running. RZ reads zero a
 discards writes; PT is always true. `gpu_shader_run` implements modular 32-bit
 integer arithmetic, bitwise truth tables, population count, predicate production,
 min/max, absolute value, bit reversal, funnel shifts, leading-bit search, byte
-permutation, signed/unsigned extraction, mask generation, selection and aligned
+permutation, signed/unsigned extraction, mask generation, shifted address
+arithmetic, carry chains, selection and aligned
 in-program branches. Comparisons can drive
 data-dependent counted loops. Source values are captured before destination
 writes, including register aliases. Untaken branches do not access their target.
@@ -540,6 +561,7 @@ python tools/gpu/make_shader_demo.py --shader-tool build/gcc/bin/windows/PoundGp
 python tools/gpu/make_shader_control_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_bits_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 python tools/gpu/make_shader_extract_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
+python tools/gpu/make_shader_address_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe
 ```
 
 Trace emits one JSON object per instruction, retaining the raw words. The run
@@ -553,6 +575,11 @@ Trace shift types are 0=S64, 1=U64, 2=S32, 3=U32. The `shift_right`,
 `shift_wrap` also describes SGXT/BMSK wrapping; `compare_signed` selects signed
 SGXT interpretation. PRMT `permute_mode` values are 0=index, 1=F4E, 2=B4E,
 3=RC8, 4=ECL, 5=ECR, 6=RC16.
+`address_shift`, `intermediate_negate` and `carry_in` describe LEA's immediate
+distance, shifted-value modifier and extended mode; `shift_high` selects .HI.
+`carry_in` also selects IADD3.X. Source `negate` fields mean complement in .X
+mode rather than integer negation, and predicate arrays expose carry inputs
+and outputs independently of GPR operands.
 Files are bounded to 16 MiB and CLI budgets to one million instructions. The
 default run budget is 100,000. The synthetic demo independently checks all output
 registers, predicates and a skipped instruction, and saves `shader-report.json`
@@ -578,7 +605,13 @@ and width boundaries, an immediate high source, a destination/source alias
 and a predicated-off instruction. It writes `extraction-report.json` under
 `build/gpu-shader-extract-demo` and supports the same optional nvdisasm check.
 
-This frontend has been checked against 38,000 synthetic encodings using NVIDIA's
+The address demo checks four programs with zero, overflow and signed-bit
+inputs, LEA low/high shifts and modifiers, immediate forms, LEA.X/IADD3.X carry
+chains, carry input/output aliasing, negated zero, RZ and predication. It writes
+`address-report.json` under `build/gpu-shader-address-demo` and supports the
+same optional nvdisasm check. It does not submit a Vulkan shader.
+
+This frontend has been checked against 48,000 synthetic encodings using NVIDIA's
 SM86 disassembler, including operand order, immediates, negation, execution
 predicates, comparison modes, predicate outputs, both PLOP3 tables and branch
 targets. Additional scalar checks cover 100,000 new-family programs, all 65,536
@@ -590,6 +623,9 @@ checks, using independent scalar calculations and ASan/UBSan. Extraction and
 specialized permutation checks add 100,000 randomized programs, 131,072 mask
 boundaries, 8,192 signed/unsigned extraction boundaries and 1,536 specialized
 permutation cases, including ignored selector high bits and resumable budgets.
+Address arithmetic adds 100,000 randomized programs, including carry and
+execution predicate aliases, both GPR/predicate outputs, instruction-budget
+resumption and failure-state preservation, also checked with ASan/UBSan.
 
 Separate development probes also compared Pound's SHF/FLO/PRMT/SGXT/BMSK results
 directly against 413,696 cases on an NVIDIA GeForce RTX 3080. Those probes replace only
@@ -600,6 +636,14 @@ and selected immediate forms. Actual hardware confirmed the
 `0xffffffff` FLO.SH no-sign-bit result, which differs from treating it as CLZ.
 This validates the probed arithmetic, not shader scheduling, other instruction
 families or a complete graphics pipeline. CUDA is not a runtime dependency.
+
+Separate LEA/IADD3 probes check another 1,146,880 result/carry pairs across
+280 variants on that RTX 3080, including .HI, .X, boundary distances, immediate
+forms, complements, negation and both IADD3 carry thresholds. Only arithmetic
+and predicate-comparison instructions are replaced in a bounded private CUDA
+kernel; its input/output addressing and stores remain unchanged. Results are
+compared with both independent scalar calculations and Pound's executor.
+These development probes are not a production GPU backend or a rendering test.
 
 This is not a warp interpreter, SPIR-V translator, Vulkan shader dispatch or
 proof of game compatibility. No

@@ -30,6 +30,7 @@ typedef enum
     GPU_SHADER_PRMT,
     GPU_SHADER_SGXT,
     GPU_SHADER_BMSK,
+    GPU_SHADER_LEA,
 } gpu_shader_operation_t;
 
 typedef enum
@@ -104,6 +105,9 @@ typedef struct
     uint32_t                  shift_wrap;
     uint32_t                  shift_high;
     uint32_t                  return_shift;
+    uint32_t                  address_shift;
+    uint32_t                  intermediate_negate;
+    uint32_t                  carry_in;
     gpu_shader_permute_mode_t permute_mode;
     uint32_t                  predicate_destinations[2];
     uint32_t                  predicate_sources[3];

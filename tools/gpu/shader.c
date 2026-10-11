@@ -87,6 +87,7 @@ trace_shader(const uint8_t *bytes, size_t size)
         printf(
             "],\"shift_type\":%u,\"shift_right\":%u,\"shift_wrap\":%u,\"shift_high\":%u,\"return_"
             "shift\":%u,"
+            "\"address_shift\":%u,\"intermediate_negate\":%u,\"carry_in\":%u,"
             "\"permute_mode\":%u,\"comparison\":%u,\"compare_signed\":%u,\"boolean_operation\":%u,"
             "\"predicate_sources\":[",
             (uint32_t)instruction.shift_type,
@@ -94,6 +95,9 @@ trace_shader(const uint8_t *bytes, size_t size)
             instruction.shift_wrap,
             instruction.shift_high,
             instruction.return_shift,
+            instruction.address_shift,
+            instruction.intermediate_negate,
+            instruction.carry_in,
             (uint32_t)instruction.permute_mode,
             (uint32_t)instruction.comparison,
             instruction.compare_signed,
