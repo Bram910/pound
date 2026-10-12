@@ -8,7 +8,7 @@ can read and write mapped GPU memory. Production rendering is still
 unimplemented; no guest OS GPU submission service is connected yet. A separate
 experimental SM86 integer shader decoder and single-lane reference executor are
 available for developing the shader frontend, with an experimental straight-line
-integer SPIR-V emitter for the non-branch subset.
+integer SPIR-V emitter with straight-line and budget-limited control-flow modes.
 
 ## Supported command formats
 
@@ -900,11 +900,97 @@ and deterministic emission are also checked natively and with ASan/UBSan.
 These are synthetic integer compute checks, not measurements of game FPS,
 rendering correctness or a percentage of full shader compatibility.
 
+### Bounded branch and loop mode
+
+`gpu_shader_spirv_emit_bounded(program, budget, words, capacity, word_count)`
+adds BRA, guarded/early EXIT, loops and resumable instruction budgets to the
+same integer arithmetic subset: all 22 currently decoded instruction families.
+It keeps the original straight-line API and its 256-word ABI unchanged.
+Use the original path for straight-line emission rather than paying for the
+experimental dispatcher when it is unnecessary.
+
+The bounded mode generates a structured SPIR-V loop and a guest-PC switch,
+with per-invocation function-local registers and predicates. Each switch case
+loads its operands, executes the already supported arithmetic, commits outputs
+and advances or redirects the byte PC. Inputs and execution predicates are
+captured before aliasing outputs. This is a GPU-resident control-flow baseline,
+not optimized direct CFG lowering or a model of warp reconvergence, shared
+memory or inter-lane synchronization.
+
+Budget is a compile-time argument in 1–4,096 and counts guest instructions,
+including skipped instructions and EXIT. Each dispatch starts a fresh budget;
+the cumulative 64-bit step counter remains in lane state. Self-loops stop at
+the budget instead of running indefinitely. This instruction bound does not
+guarantee a wall-clock runtime or bounded driver compilation time: the host
+must still choose sensible dispatch sizes and budgets. The 1,024-instruction
+preparation/emission limit and whole-program encoding/target validation apply.
+Missing EXIT and falloff are accepted for bounded execution and reported in
+the lane result; the strict straight-line path still rejects them.
+
+#### Bounded buffer ABI
+
+The compute entry point, descriptor set/binding and local size are unchanged,
+but each bounded lane occupies **261 uint32 words (1,044 bytes)**:
+
+| Words | State |
+| --- | --- |
+| 0–254 | R0–R254 |
+| 255 | Packed P0–P6 |
+| 256 | Byte PC |
+| 257, 258 | Cumulative step count, low/high 32-bit halves |
+| 259 | Halted, zero or one |
+| 260 | Output `error_t` status; input is ignored |
+
+Dispatch exactly `(lane_count, 1, 1)` and bind at least `lane_count * 1,044`
+bytes, observing the same device limits and memory-visibility rules as the
+straight-line ABI. Do not mix the two lane strides. Byte PC must be aligned
+to 16 and no greater than program size; predicates must be in 0–127 and halted
+in 0–1. Invalid initial state returns `POUND_ERROR_INVALID_ARGUMENT` and
+preserves every input state word except output status, including invalid
+predicate bits. Already-halted valid state succeeds without executing.
+
+Successful EXIT sets halted and leaves PC after EXIT. Unfinished budgeted
+execution returns `POUND_ERROR_GPU_RESOURCE_LIMIT`; reuse its output as input
+to continue with the same compiled program. Falloff returns
+`POUND_ERROR_GPU_TRUNCATED_COMMAND` without advancing PC or steps further.
+Step-count overflow also returns resource-limit without executing that step.
+The fault/budget ordering matches the CPU reference, including falloff before
+overflow checks and budget exhaustion immediately after the last instruction.
+There is no automatic code-cache invalidation: the host must retain the same
+prepared/compiled snapshot or deliberately replace it when guest code changes.
+
+```sh
+PoundGpuShader spirv-bounded raw-sm86.bin output.spv 256
+spirv-val --target-env vulkan1.1 output.spv
+python tools/gpu/make_shader_spirv_control_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe --spirv-val /path/to/spirv-val
+```
+
+The CLI default budget is 256. The control demo emits 13 independent fixtures
+under `build/gpu-shader-spirv-control-demo`: diamonds, predicated exits, counted
+loop resumption, self-loops (including budget 4,096), falloff, step overflow,
+low-step carry, already-halted and invalid-state preservation. It writes raw
+code, modules, input/expected lane buffers and `control-report.json`; it does
+not create a Vulkan device or claim to dispatch those fixtures itself.
+Invalid CLI budgets and failed preparation/emission preserve existing output
+files. A compute harness must validate each module before submission.
+
+Separate development checks compare full 261-word states with the CPU reference
+across varying budgets, interior PCs, all 128 predicate masks, randomized
+cyclic/irreducible graphs, mixed arithmetic, 64-bit step boundaries and invalid
+inputs. Native and ASan/UBSan checks also cover output preservation, deterministic
+modules, bad targets and 1,024/1,025-instruction limits. These remain independent
+lane probes, not Switch game execution or production graphics integration.
+Across 55 programs and four budgets, all 112,640 complete lane states
+(29,399,040 uint32 words) agree on each of RTX 3080 Vulkan and software Vulkan.
+All 13 independent fixtures also agree on both backends, including chained
+resumption and budget 4,096. The 301,056-state straight-line hardware regression
+still passes separately.
+
 ## Next layers
 
 1. Connect GPU mappings and channel submission to guest OS services.
 2. Extend copy layouts, synchronization and engine method coverage.
-3. Extend the SM86/SPIR-V subsets, branch lowering and graphics-stage interfaces.
+3. Extend SM86/SPIR-V subsets, optimize direct CFG lowering and add graphics-stage interfaces.
 4. Vulkan resource management, draws, compute and presentation.
 
 Command parsing alone does not establish Switch 2 compatibility or a GPU

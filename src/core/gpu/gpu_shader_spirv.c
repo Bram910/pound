@@ -1,6 +1,6 @@
 #include "gpu_shader_spirv.h"
 
-#define CONSTANT_LIMIT (GPU_SHADER_SPIRV_INSTRUCTION_LIMIT + 259U)
+#define CONSTANT_LIMIT (GPU_SHADER_SPIRV_INSTRUCTION_LIMIT * 2U + 267U)
 
 typedef enum
 {
@@ -22,6 +22,8 @@ typedef enum
     SPIRV_TRUE,
     SPIRV_ENTRY,
     SPIRV_PAIR,
+    SPIRV_LOCAL_WORD_POINTER,
+    SPIRV_LOCAL_BOOL_POINTER,
 } spirv_id_t;
 
 typedef enum
@@ -83,7 +85,12 @@ typedef enum
     SPIRV_FIELD_UNSIGNED         = 203,
     SPIRV_REVERSE                = 204,
     SPIRV_COUNT                  = 205,
+    SPIRV_LOOP_MERGE             = 246,
+    SPIRV_SELECTION_MERGE        = 247,
     SPIRV_LABEL                  = 248,
+    SPIRV_BRANCH                 = 249,
+    SPIRV_BRANCH_CONDITIONAL     = 250,
+    SPIRV_SWITCH                 = 251,
     SPIRV_RETURN                 = 253,
 } spirv_opcode_t;
 
@@ -94,9 +101,14 @@ typedef struct
     uint32_t  next_id;
     uint32_t  constants[CONSTANT_LIMIT];
     uint32_t  constant_count;
+    uint32_t  budget;
     uint32_t  registers[GPU_SHADER_ZERO_REGISTER];
-    uint32_t  pointers[GPU_SHADER_SPIRV_LANE_WORDS];
+    uint32_t  pointers[GPU_SHADER_SPIRV_BOUNDED_LANE_WORDS];
     uint32_t  predicates[GPU_SHADER_TRUE_PREDICATE];
+    uint32_t  register_variables[GPU_SHADER_ZERO_REGISTER];
+    uint32_t  predicate_variables[GPU_SHADER_TRUE_PREDICATE];
+    uint32_t  state_variables[6];
+    uint32_t  counter_variable;
 } spirv_builder_t;
 
 #define EMIT(builder, opcode, ...)           \
@@ -128,7 +140,7 @@ constant(const spirv_builder_t *builder, uint32_t value)
     {
         if (*cursor == value)
         {
-            return SPIRV_PAIR + 1U + index;
+            return SPIRV_LOCAL_BOOL_POINTER + 1U + index;
         }
     }
     return 0;
@@ -571,7 +583,7 @@ dot_word(spirv_builder_t                *builder,
 }
 
 static error_t
-validate(const gpu_shader_program_t *program)
+validate(const gpu_shader_program_t *program, uint32_t bounded)
 {
     if (NULL == program || NULL == program->nodes || NULL == program->blocks
         || 0 == program->instruction_count || 0 == program->block_count
@@ -592,10 +604,21 @@ validate(const gpu_shader_program_t *program)
         switch (instruction->operation)
         {
             case GPU_SHADER_EXIT:
-                if (index + 1U != program->instruction_count || instruction->predicate != 7U
-                    || instruction->predicate_invert)
+                if (!bounded
+                    && (index + 1U != program->instruction_count || instruction->predicate != 7U
+                        || instruction->predicate_invert))
                 {
                     return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+                }
+                break;
+            case GPU_SHADER_BRA:
+                if (!bounded)
+                {
+                    return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+                }
+                if (node->branch_instruction >= program->instruction_count)
+                {
+                    return POUND_ERROR_GPU_INVALID_SHADER;
                 }
                 break;
             case GPU_SHADER_IADD3:
@@ -623,39 +646,58 @@ validate(const gpu_shader_program_t *program)
                 return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
         }
     }
-    return program->nodes[program->instruction_count - 1U].instruction.operation == GPU_SHADER_EXIT
+    return bounded
+                   || program->nodes[program->instruction_count - 1U].instruction.operation
+                          == GPU_SHADER_EXIT
                ? POUND_SUCCESS
                : POUND_ERROR_GPU_UNSUPPORTED_SHADER;
 }
 
 static void
+append_constant(spirv_builder_t *builder, uint32_t value)
+{
+    if (0 == constant(builder, value))
+    {
+        const uint32_t count      = builder->constant_count;
+        builder->constants[count] = value;
+        builder->constant_count   = count + 1U;
+    }
+}
+
+static void
 build_constants(spirv_builder_t *builder, const gpu_shader_program_t *program)
 {
-    uint32_t *cursor = builder->constants;
-    for (uint32_t value = 0; value <= 256U; ++value)
+    uint32_t      *cursor = builder->constants;
+    const uint32_t limit  = builder->budget ? GPU_SHADER_SPIRV_STATUS : 256U;
+    for (uint32_t value = 0; value <= limit; ++value)
     {
         *cursor++ = value;
     }
-    *cursor++                               = UINT32_MAX;
-    *cursor++                               = 0x80000000U;
-    uint32_t                 constant_count = 259U;
-    const gpu_shader_node_t *node           = program->nodes;
+    *cursor++                     = UINT32_MAX;
+    *cursor++                     = 0x80000000U;
+    builder->constant_count       = limit + 3U;
+    const gpu_shader_node_t *node = program->nodes;
     for (size_t index = 0; index < program->instruction_count; ++index, ++node)
     {
         const gpu_shader_source_t *operand = node->instruction.sources;
         for (uint32_t ordinal = 0; ordinal < node->instruction.source_count; ++ordinal, ++operand)
         {
-            builder->constant_count = constant_count;
-            if (operand->kind == GPU_SHADER_SOURCE_IMMEDIATE
-                && 0 == constant(builder, operand->value))
+            if (operand->kind == GPU_SHADER_SOURCE_IMMEDIATE)
             {
-                *cursor++ = operand->value;
-                ++constant_count;
+                append_constant(builder, operand->value);
             }
         }
+        if (builder->budget)
+        {
+            append_constant(builder, (uint32_t)((index + 1U) * GPU_SHADER_INSTRUCTION_SIZE));
+        }
     }
-    builder->constant_count = constant_count;
-    builder->next_id        = SPIRV_PAIR + 1U + constant_count;
+    if (builder->budget)
+    {
+        append_constant(builder, GPU_SHADER_SPIRV_BOUNDED_LANE_WORDS);
+        append_constant(builder, builder->budget);
+    }
+    builder->next_id = SPIRV_LOCAL_BOOL_POINTER + 1U + builder->constant_count;
 }
 
 static void
@@ -991,7 +1033,7 @@ emit_instruction(spirv_builder_t *builder, const gpu_shader_instruction_t *instr
 }
 
 static void
-build(spirv_builder_t *builder, const gpu_shader_program_t *program)
+build_prefix(spirv_builder_t *builder, const gpu_shader_program_t *program)
 {
     build_constants(builder, program);
     builder->count = 5U;
@@ -1016,18 +1058,57 @@ build(spirv_builder_t *builder, const gpu_shader_program_t *program)
     EMIT(builder, SPIRV_TYPE_POINTER, SPIRV_BUFFER_POINTER, 12U, SPIRV_BUFFER_TYPE);
     EMIT(builder, SPIRV_TYPE_POINTER, SPIRV_WORD_POINTER, 12U, SPIRV_UINT);
     EMIT(builder, SPIRV_TYPE_POINTER, SPIRV_INPUT_POINTER, 1U, SPIRV_VECTOR);
+    EMIT(builder, SPIRV_TYPE_POINTER, SPIRV_LOCAL_WORD_POINTER, 7U, SPIRV_UINT);
+    EMIT(builder, SPIRV_TYPE_POINTER, SPIRV_LOCAL_BOOL_POINTER, 7U, SPIRV_BOOL);
     EMIT(builder, SPIRV_TYPE_FUNCTION, SPIRV_FUNCTION_TYPE, SPIRV_VOID);
     EMIT(builder, SPIRV_CONSTANT_TRUE, SPIRV_BOOL, SPIRV_TRUE);
     EMIT(builder, SPIRV_CONSTANT_FALSE, SPIRV_BOOL, SPIRV_FALSE);
     const uint32_t *value = builder->constants;
     for (uint32_t index = 0; index < builder->constant_count; ++index, ++value)
     {
-        EMIT(builder, SPIRV_CONSTANT, SPIRV_UINT, SPIRV_PAIR + 1U + index, *value);
+        EMIT(builder, SPIRV_CONSTANT, SPIRV_UINT, SPIRV_LOCAL_BOOL_POINTER + 1U + index, *value);
     }
     EMIT(builder, SPIRV_VARIABLE, SPIRV_BUFFER_POINTER, SPIRV_BUFFER, 12U);
     EMIT(builder, SPIRV_VARIABLE, SPIRV_INPUT_POINTER, SPIRV_GLOBAL_ID, 1U);
     EMIT(builder, SPIRV_FUNCTION, SPIRV_VOID, SPIRV_MAIN, 0U, SPIRV_FUNCTION_TYPE);
     EMIT(builder, SPIRV_LABEL, SPIRV_ENTRY);
+}
+
+static uint32_t
+buffer_pointer(spirv_builder_t *builder, uint32_t offset)
+{
+    const uint32_t result = builder->next_id++;
+    EMIT(builder,
+         SPIRV_ACCESS_CHAIN,
+         SPIRV_WORD_POINTER,
+         result,
+         SPIRV_BUFFER,
+         constant(builder, 0),
+         offset);
+    return result;
+}
+
+static void
+build_end(spirv_builder_t *builder)
+{
+    emit(builder, SPIRV_RETURN, NULL, 0);
+    emit(builder, SPIRV_FUNCTION_END, NULL, 0);
+    if (NULL != builder->words)
+    {
+        const uint32_t  header[5]   = { 0x07230203U, 0x00010300U, 0, builder->next_id, 0 };
+        uint32_t       *cursor      = builder->words;
+        const uint32_t *header_word = header;
+        for (uint32_t index = 0; index < 5U; ++index, ++cursor, ++header_word)
+        {
+            *cursor = *header_word;
+        }
+    }
+}
+
+static void
+build(spirv_builder_t *builder, const gpu_shader_program_t *program)
+{
+    build_prefix(builder, program);
     const uint32_t invocation = unary(builder, SPIRV_LOAD, SPIRV_VECTOR, SPIRV_GLOBAL_ID);
     const uint32_t base       = binary(builder,
                                  SPIRV_MULTIPLY,
@@ -1041,14 +1122,7 @@ build(spirv_builder_t *builder, const gpu_shader_program_t *program)
     {
         const uint32_t offset
             = binary(builder, SPIRV_ADD, SPIRV_UINT, base, constant(builder, index));
-        *pointer = builder->next_id++;
-        EMIT(builder,
-             SPIRV_ACCESS_CHAIN,
-             SPIRV_WORD_POINTER,
-             *pointer,
-             SPIRV_BUFFER,
-             constant(builder, 0),
-             offset);
+        *pointer              = buffer_pointer(builder, offset);
         const uint32_t loaded = unary(builder, SPIRV_LOAD, SPIRV_UINT, *pointer);
         if (index == GPU_SHADER_ZERO_REGISTER)
         {
@@ -1089,18 +1163,400 @@ build(spirv_builder_t *builder, const gpu_shader_program_t *program)
         EMIT(builder, SPIRV_STORE, *pointer, *operand);
     }
     EMIT(builder, SPIRV_STORE, *pointer, mask);
-    emit(builder, SPIRV_RETURN, NULL, 0);
-    emit(builder, SPIRV_FUNCTION_END, NULL, 0);
-    if (NULL != builder->words)
+    build_end(builder);
+}
+
+static uint32_t
+local_variable(spirv_builder_t *builder, uint32_t type, uint32_t initializer)
+{
+    const uint32_t result = builder->next_id++;
+    if (initializer)
     {
-        const uint32_t  header[5]   = { 0x07230203U, 0x00010300U, 0, builder->next_id, 0 };
-        uint32_t       *cursor      = builder->words;
-        const uint32_t *header_word = header;
-        for (uint32_t index = 0; index < 5U; ++index, ++cursor, ++header_word)
+        EMIT(builder, SPIRV_VARIABLE, type, result, 7U, initializer);
+    }
+    else
+    {
+        EMIT(builder, SPIRV_VARIABLE, type, result, 7U);
+    }
+    return result;
+}
+
+static uint32_t
+load_state(spirv_builder_t *builder, uint32_t word)
+{
+    return unary(
+        builder, SPIRV_LOAD, SPIRV_UINT, builder->state_variables[word - GPU_SHADER_ZERO_REGISTER]);
+}
+
+static void
+store_state(spirv_builder_t *builder, uint32_t word, uint32_t value)
+{
+    EMIT(builder, SPIRV_STORE, builder->state_variables[word - GPU_SHADER_ZERO_REGISTER], value);
+}
+
+static void
+load_register(spirv_builder_t *builder, uint32_t index)
+{
+    if (index != GPU_SHADER_ZERO_REGISTER)
+    {
+        builder->registers[index]
+            = unary(builder, SPIRV_LOAD, SPIRV_UINT, builder->register_variables[index]);
+    }
+}
+
+static void
+load_node(spirv_builder_t *builder, const gpu_shader_instruction_t *instruction)
+{
+    const gpu_shader_source_t *operand = instruction->sources;
+    for (uint32_t index = 0; index < 3U; ++index, ++operand)
+    {
+        if (operand->kind == GPU_SHADER_SOURCE_REGISTER)
         {
-            *cursor = *header_word;
+            load_register(builder, operand->value);
         }
     }
+    if (instruction->source_count)
+    {
+        load_register(builder, instruction->destination);
+    }
+    if (instruction->operation == GPU_SHADER_IMAD
+        && instruction->multiply_mode != GPU_SHADER_MULTIPLY_LOW)
+    {
+        if (instruction->sources[2].value != GPU_SHADER_ZERO_REGISTER)
+        {
+            load_register(builder, instruction->sources[2].value + 1U);
+        }
+        if (instruction->multiply_mode == GPU_SHADER_MULTIPLY_WIDE
+            && instruction->destination != GPU_SHADER_ZERO_REGISTER)
+        {
+            load_register(builder, instruction->destination + 1U);
+        }
+    }
+    uint32_t       *value    = builder->predicates;
+    const uint32_t *variable = builder->predicate_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_TRUE_PREDICATE; ++index, ++value, ++variable)
+    {
+        *value = unary(builder, SPIRV_LOAD, SPIRV_BOOL, *variable);
+    }
+}
+
+static void
+store_node(spirv_builder_t *builder, const gpu_shader_instruction_t *instruction)
+{
+    const uint32_t *destination = instruction->predicate_destinations;
+    for (uint32_t index = 0; index < instruction->predicate_destination_count;
+         ++index, ++destination)
+    {
+        if (*destination != GPU_SHADER_TRUE_PREDICATE)
+        {
+            EMIT(builder,
+                 SPIRV_STORE,
+                 builder->predicate_variables[*destination],
+                 builder->predicates[*destination]);
+        }
+    }
+    if (instruction->source_count && instruction->destination != GPU_SHADER_ZERO_REGISTER)
+    {
+        const uint32_t target = instruction->destination;
+        EMIT(builder, SPIRV_STORE, builder->register_variables[target], builder->registers[target]);
+        if (instruction->operation == GPU_SHADER_IMAD
+            && instruction->multiply_mode == GPU_SHADER_MULTIPLY_WIDE)
+        {
+            EMIT(builder,
+                 SPIRV_STORE,
+                 builder->register_variables[target + 1U],
+                 builder->registers[target + 1U]);
+        }
+    }
+}
+
+static void
+build_bounded(spirv_builder_t *builder, const gpu_shader_program_t *program)
+{
+    build_prefix(builder, program);
+    const uint32_t zero     = constant(builder, 0);
+    uint32_t      *variable = builder->register_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_ZERO_REGISTER; ++index, ++variable)
+    {
+        *variable = local_variable(builder, SPIRV_LOCAL_WORD_POINTER, 0);
+    }
+    variable = builder->predicate_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_TRUE_PREDICATE; ++index, ++variable)
+    {
+        *variable = local_variable(builder, SPIRV_LOCAL_BOOL_POINTER, 0);
+    }
+    variable = builder->state_variables;
+    for (uint32_t index = 0; index < 6U; ++index, ++variable)
+    {
+        *variable = local_variable(builder, SPIRV_LOCAL_WORD_POINTER, zero);
+    }
+    builder->counter_variable = local_variable(builder, SPIRV_LOCAL_WORD_POINTER, zero);
+    const uint32_t invocation = unary(builder, SPIRV_LOAD, SPIRV_VECTOR, SPIRV_GLOBAL_ID);
+    const uint32_t base       = binary(builder,
+                                 SPIRV_MULTIPLY,
+                                 SPIRV_UINT,
+                                 extract(builder, invocation, 0),
+                                 constant(builder, GPU_SHADER_SPIRV_BOUNDED_LANE_WORDS));
+    uint32_t      *pointer    = builder->pointers;
+    variable                  = builder->register_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_SPIRV_BOUNDED_LANE_WORDS; ++index, ++pointer)
+    {
+        *pointer = buffer_pointer(
+            builder, binary(builder, SPIRV_ADD, SPIRV_UINT, base, constant(builder, index)));
+        if (index < GPU_SHADER_ZERO_REGISTER)
+        {
+            EMIT(builder,
+                 SPIRV_STORE,
+                 *variable++,
+                 unary(builder, SPIRV_LOAD, SPIRV_UINT, *pointer));
+        }
+        else if (index != GPU_SHADER_SPIRV_STATUS)
+        {
+            store_state(builder, index, unary(builder, SPIRV_LOAD, SPIRV_UINT, *pointer));
+        }
+    }
+    const uint32_t raw_mask = load_state(builder, GPU_SHADER_ZERO_REGISTER);
+    variable                = builder->predicate_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_TRUE_PREDICATE; ++index, ++variable)
+    {
+        const uint32_t bit
+            = binary(builder, SPIRV_AND, SPIRV_UINT, raw_mask, constant(builder, 1U << index));
+        EMIT(builder,
+             SPIRV_STORE,
+             *variable,
+             binary(builder, SPIRV_NOT_EQUAL, SPIRV_BOOL, bit, zero));
+    }
+    const uint32_t initial_pc = load_state(builder, GPU_SHADER_SPIRV_PC);
+    const uint32_t invalid_pc
+        = binary(builder,
+                 SPIRV_BOOL_OR,
+                 SPIRV_BOOL,
+                 binary(builder,
+                        SPIRV_UNSIGNED_GREATER,
+                        SPIRV_BOOL,
+                        initial_pc,
+                        constant(builder, (uint32_t)program->byte_size)),
+                 binary(builder,
+                        SPIRV_NOT_EQUAL,
+                        SPIRV_BOOL,
+                        binary(builder, SPIRV_AND, SPIRV_UINT, initial_pc, constant(builder, 15)),
+                        zero));
+    const uint32_t invalid_mask
+        = binary(builder,
+                 SPIRV_NOT_EQUAL,
+                 SPIRV_BOOL,
+                 binary(builder, SPIRV_SHIFT_RIGHT, SPIRV_UINT, raw_mask, constant(builder, 7)),
+                 zero);
+    const uint32_t invalid = binary(builder,
+                                    SPIRV_BOOL_OR,
+                                    SPIRV_BOOL,
+                                    invalid_pc,
+                                    binary(builder,
+                                           SPIRV_BOOL_OR,
+                                           SPIRV_BOOL,
+                                           invalid_mask,
+                                           binary(builder,
+                                                  SPIRV_UNSIGNED_GREATER,
+                                                  SPIRV_BOOL,
+                                                  load_state(builder, GPU_SHADER_SPIRV_HALTED),
+                                                  constant(builder, 1))));
+    store_state(
+        builder,
+        GPU_SHADER_SPIRV_STATUS,
+        select_value(
+            builder, SPIRV_UINT, invalid, constant(builder, POUND_ERROR_INVALID_ARGUMENT), zero));
+    uint32_t       next_id      = builder->next_id;
+    const uint32_t header       = next_id++;
+    const uint32_t check        = next_id++;
+    const uint32_t failed       = next_id++;
+    const uint32_t dispatch     = next_id++;
+    const uint32_t default_case = next_id++;
+    const uint32_t switch_merge = next_id++;
+    const uint32_t check_merge  = next_id++;
+    const uint32_t continuing   = next_id++;
+    const uint32_t done         = next_id++;
+    uint32_t       labels[GPU_SHADER_SPIRV_INSTRUCTION_LIMIT];
+    uint32_t      *label = labels;
+    for (size_t index = 0; index < program->instruction_count; ++index, ++label)
+    {
+        *label = next_id++;
+    }
+    builder->next_id = next_id;
+    EMIT(builder, SPIRV_BRANCH, header);
+    EMIT(builder, SPIRV_LABEL, header);
+    const uint32_t counter = unary(builder, SPIRV_LOAD, SPIRV_UINT, builder->counter_variable);
+    const uint32_t running = binary(
+        builder,
+        SPIRV_BOOL_AND,
+        SPIRV_BOOL,
+        binary(
+            builder, SPIRV_UNSIGNED_LESS, SPIRV_BOOL, counter, constant(builder, builder->budget)),
+        binary(builder,
+               SPIRV_BOOL_AND,
+               SPIRV_BOOL,
+               binary(builder,
+                      SPIRV_EQUAL,
+                      SPIRV_BOOL,
+                      load_state(builder, GPU_SHADER_SPIRV_HALTED),
+                      zero),
+               binary(builder,
+                      SPIRV_EQUAL,
+                      SPIRV_BOOL,
+                      load_state(builder, GPU_SHADER_SPIRV_STATUS),
+                      zero)));
+    EMIT(builder, SPIRV_LOOP_MERGE, done, continuing, 0U);
+    EMIT(builder, SPIRV_BRANCH_CONDITIONAL, running, check, done);
+    EMIT(builder, SPIRV_LABEL, check);
+    const uint32_t pc   = load_state(builder, GPU_SHADER_SPIRV_PC);
+    const uint32_t low  = load_state(builder, GPU_SHADER_SPIRV_STEPS_LOW);
+    const uint32_t high = load_state(builder, GPU_SHADER_SPIRV_STEPS_HIGH);
+    const uint32_t overflow
+        = binary(builder,
+                 SPIRV_BOOL_AND,
+                 SPIRV_BOOL,
+                 binary(builder, SPIRV_EQUAL, SPIRV_BOOL, low, constant(builder, UINT32_MAX)),
+                 binary(builder, SPIRV_EQUAL, SPIRV_BOOL, high, constant(builder, UINT32_MAX)));
+    const uint32_t failure
+        = select_value(builder,
+                       SPIRV_UINT,
+                       binary(builder,
+                              SPIRV_UNSIGNED_GREATER_EQUAL,
+                              SPIRV_BOOL,
+                              pc,
+                              constant(builder, (uint32_t)program->byte_size)),
+                       constant(builder, POUND_ERROR_GPU_TRUNCATED_COMMAND),
+                       select_value(builder,
+                                    SPIRV_UINT,
+                                    overflow,
+                                    constant(builder, POUND_ERROR_GPU_RESOURCE_LIMIT),
+                                    zero));
+    store_state(builder, GPU_SHADER_SPIRV_STATUS, failure);
+    const uint32_t ready = binary(builder, SPIRV_EQUAL, SPIRV_BOOL, failure, zero);
+    EMIT(builder, SPIRV_SELECTION_MERGE, check_merge, 0U);
+    EMIT(builder, SPIRV_BRANCH_CONDITIONAL, ready, dispatch, failed);
+    EMIT(builder, SPIRV_LABEL, failed);
+    EMIT(builder, SPIRV_BRANCH, check_merge);
+    EMIT(builder, SPIRV_LABEL, dispatch);
+    const uint32_t instruction_index
+        = binary(builder, SPIRV_SHIFT_RIGHT, SPIRV_UINT, pc, constant(builder, 4));
+    uint32_t  operands[2U + GPU_SHADER_SPIRV_INSTRUCTION_LIMIT * 2U];
+    uint32_t *operand = operands;
+    *operand++        = instruction_index;
+    *operand++        = default_case;
+    label             = labels;
+    for (size_t index = 0; index < program->instruction_count; ++index, ++label)
+    {
+        *operand++ = (uint32_t)index;
+        *operand++ = *label;
+    }
+    EMIT(builder, SPIRV_SELECTION_MERGE, switch_merge, 0U);
+    emit(builder, SPIRV_SWITCH, operands, 2U + program->instruction_count * 2U);
+    const gpu_shader_node_t *node = program->nodes;
+    label                         = labels;
+    for (size_t index = 0; index < program->instruction_count; ++index, ++node, ++label)
+    {
+        EMIT(builder, SPIRV_LABEL, *label);
+        const gpu_shader_instruction_t *instruction = &node->instruction;
+        load_node(builder, instruction);
+        uint32_t following
+            = constant(builder, (uint32_t)((index + 1U) * GPU_SHADER_INSTRUCTION_SIZE));
+        const uint32_t active
+            = predicate(builder, instruction->predicate, instruction->predicate_invert);
+        if (instruction->operation == GPU_SHADER_BRA)
+        {
+            const uint32_t taken
+                = binary(builder,
+                         SPIRV_BOOL_AND,
+                         SPIRV_BOOL,
+                         active,
+                         predicate(builder, instruction->condition, instruction->condition_invert));
+            following = select_value(
+                builder,
+                SPIRV_UINT,
+                taken,
+                constant(builder,
+                         (uint32_t)(node->branch_instruction * GPU_SHADER_INSTRUCTION_SIZE)),
+                following);
+        }
+        else if (instruction->operation == GPU_SHADER_EXIT)
+        {
+            store_state(builder,
+                        GPU_SHADER_SPIRV_HALTED,
+                        select_value(builder,
+                                     SPIRV_UINT,
+                                     active,
+                                     constant(builder, 1),
+                                     load_state(builder, GPU_SHADER_SPIRV_HALTED)));
+        }
+        else
+        {
+            emit_instruction(builder, instruction);
+            store_node(builder, instruction);
+        }
+        store_state(builder, GPU_SHADER_SPIRV_PC, following);
+        EMIT(builder, SPIRV_BRANCH, switch_merge);
+    }
+    EMIT(builder, SPIRV_LABEL, default_case);
+    store_state(
+        builder, GPU_SHADER_SPIRV_STATUS, constant(builder, POUND_ERROR_GPU_TRUNCATED_COMMAND));
+    EMIT(builder, SPIRV_BRANCH, switch_merge);
+    EMIT(builder, SPIRV_LABEL, switch_merge);
+    const uint32_t executed = binary(
+        builder, SPIRV_EQUAL, SPIRV_BOOL, load_state(builder, GPU_SHADER_SPIRV_STATUS), zero);
+    uint32_t       upper = high;
+    const uint32_t step  = add_word(builder, low, predicate_word(builder, executed), &upper);
+    store_state(builder, GPU_SHADER_SPIRV_STEPS_LOW, step);
+    store_state(builder, GPU_SHADER_SPIRV_STEPS_HIGH, upper);
+    EMIT(builder, SPIRV_BRANCH, check_merge);
+    EMIT(builder, SPIRV_LABEL, check_merge);
+    EMIT(builder, SPIRV_BRANCH, continuing);
+    EMIT(builder, SPIRV_LABEL, continuing);
+    EMIT(builder,
+         SPIRV_STORE,
+         builder->counter_variable,
+         binary(builder, SPIRV_ADD, SPIRV_UINT, counter, constant(builder, 1)));
+    EMIT(builder, SPIRV_BRANCH, header);
+    EMIT(builder, SPIRV_LABEL, done);
+    uint32_t       status    = load_state(builder, GPU_SHADER_SPIRV_STATUS);
+    const uint32_t exhausted = binary(
+        builder,
+        SPIRV_BOOL_AND,
+        SPIRV_BOOL,
+        binary(builder, SPIRV_EQUAL, SPIRV_BOOL, status, zero),
+        binary(
+            builder, SPIRV_EQUAL, SPIRV_BOOL, load_state(builder, GPU_SHADER_SPIRV_HALTED), zero));
+    status = select_value(
+        builder, SPIRV_UINT, exhausted, constant(builder, POUND_ERROR_GPU_RESOURCE_LIMIT), status);
+    store_state(builder, GPU_SHADER_SPIRV_STATUS, status);
+    pointer  = builder->pointers;
+    variable = builder->register_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_ZERO_REGISTER; ++index, ++pointer, ++variable)
+    {
+        EMIT(builder, SPIRV_STORE, *pointer, unary(builder, SPIRV_LOAD, SPIRV_UINT, *variable));
+    }
+    uint32_t mask = zero;
+    variable      = builder->predicate_variables;
+    for (uint32_t index = 0; index < GPU_SHADER_TRUE_PREDICATE; ++index, ++variable)
+    {
+        mask = binary(builder,
+                      SPIRV_OR,
+                      SPIRV_UINT,
+                      mask,
+                      select_value(builder,
+                                   SPIRV_UINT,
+                                   unary(builder, SPIRV_LOAD, SPIRV_BOOL, *variable),
+                                   constant(builder, 1U << index),
+                                   zero));
+    }
+    EMIT(builder,
+         SPIRV_STORE,
+         *pointer++,
+         select_value(builder, SPIRV_UINT, invalid, raw_mask, mask));
+    for (uint32_t word = GPU_SHADER_SPIRV_PC; word <= GPU_SHADER_SPIRV_STATUS; ++word, ++pointer)
+    {
+        EMIT(builder, SPIRV_STORE, *pointer, load_state(builder, word));
+    }
+    build_end(builder);
 }
 
 error_t
@@ -1113,7 +1569,7 @@ gpu_shader_spirv_emit(const gpu_shader_program_t *program,
     {
         return POUND_ERROR_INVALID_ARGUMENT;
     }
-    const error_t status = validate(program);
+    const error_t status = validate(program, 0);
     if (status != POUND_SUCCESS)
     {
         return status;
@@ -1129,6 +1585,39 @@ gpu_shader_spirv_emit(const gpu_shader_program_t *program,
         }
         builder = (spirv_builder_t) { .words = words };
         build(&builder, program);
+    }
+    *word_count = count;
+    return POUND_SUCCESS;
+}
+
+error_t
+gpu_shader_spirv_emit_bounded(const gpu_shader_program_t *program,
+                              uint32_t                    budget,
+                              uint32_t                   *words,
+                              size_t                      capacity,
+                              size_t                     *word_count)
+{
+    if (NULL == word_count || (NULL == words && capacity != 0) || 0 == budget
+        || budget > GPU_SHADER_SPIRV_BUDGET_LIMIT)
+    {
+        return POUND_ERROR_INVALID_ARGUMENT;
+    }
+    const error_t status = validate(program, 1);
+    if (status != POUND_SUCCESS)
+    {
+        return status;
+    }
+    spirv_builder_t builder = { .budget = budget };
+    build_bounded(&builder, program);
+    const size_t count = builder.count;
+    if (NULL != words)
+    {
+        if (capacity < count)
+        {
+            return POUND_ERROR_GPU_RESOURCE_LIMIT;
+        }
+        builder = (spirv_builder_t) { .words = words, .budget = budget };
+        build_bounded(&builder, program);
     }
     *word_count = count;
     return POUND_SUCCESS;
