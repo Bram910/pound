@@ -1,0 +1,39 @@
+{
+  "checkpoint": "e6e19f3fee229b8f093a96a87bcdd960365dd774",
+  "updated": "2026-10-12",
+  "families": [
+    "MOV", "IADD3", "IMAD", "LOP3", "POPC", "SEL", "NOP", "BRA", "EXIT",
+    "ISETP", "PLOP3", "IMNMX", "BREV", "IABS", "SHF", "FLO", "PRMT", "SGXT",
+    "BMSK", "LEA", "IDP4", "IDP2"
+  ],
+  "bounded_only": ["BRA"],
+  "validation": [
+    {
+      "mode": "Straight-line",
+      "programs": 147,
+      "lanes_per_program": 2048,
+      "budgets": [],
+      "lane_states": 301056,
+      "words_per_lane": 256,
+      "mismatches": 0,
+      "backends": ["NVIDIA GeForce RTX 3080"]
+    },
+    {
+      "mode": "Bounded branches / loops",
+      "programs": 55,
+      "lanes_per_program": 512,
+      "budgets": [1, 3, 16, 97],
+      "lane_states": 112640,
+      "words_per_lane": 261,
+      "mismatches": 0,
+      "backends": ["NVIDIA GeForce RTX 3080", "Mesa software Vulkan (llvmpipe)"]
+    }
+  ],
+  "control_fixtures": {
+    "programs": 13,
+    "lane_states": 16,
+    "maximum_budget": 4096,
+    "mismatches": 0,
+    "backends": ["NVIDIA GeForce RTX 3080", "Mesa software Vulkan (llvmpipe)"]
+  }
+}

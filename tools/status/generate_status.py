@@ -16,6 +16,8 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from generate_gpu_status import load_status, readme_section
+
 ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = ROOT / "docs" / "status"
 README = ROOT / "README.md"
@@ -300,21 +302,9 @@ def update_readme(arm_line):
 
 {arm_line}
 
-Horizon OS services and production GPU rendering are not implemented yet.
-[GPU memory mappings, command execution and replay tools](docs/GPU_DEVELOPMENT.md)
-support software DMA copies, opt-in Tegra/Turing tiled layouts, 3D slice
-transfers, component remapping, pitched/tiled fills, inline uploads, bounded
-GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
-semaphore acquires, reductions and timestamped completion records.
-An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
-are available, including multiword comparisons, logic-generated predicates,
-decode-once prepared programs and structural control-flow analysis.
-An experimental integer SPIR-V emitter provides a 21-family straight-line path
-and a separate budget-limited branch/loop path. It has been checked
-with Khronos validation and independent-lane Vulkan dispatch on an RTX 3080;
-it is not connected to guest submissions or game rendering. The shader badge
-indicates prototype status, not a percentage of full GPU compatibility.
-Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
+{readme_section(load_status())}
+
+Regenerate the CPU snapshot with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 {MARK_END}"""
     text = README.read_text(encoding="utf-8")
     if MARK_BEGIN in text:

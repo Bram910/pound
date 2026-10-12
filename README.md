@@ -33,21 +33,28 @@ DEVELOPER PLEASE GIVE US YOUR SUPPORT**
 
 * ARM64: share of the 3856 A64 encodings in Ballistic's decoder table that its x86 tier-1 compiler can run (54 run, 201 decoded only, 3601 not started). Ballistic commit `9db2adab`.
 
-Horizon OS services and production GPU rendering are not implemented yet.
-[GPU memory mappings, command execution and replay tools](docs/GPU_DEVELOPMENT.md)
-support software DMA copies, opt-in Tegra/Turing tiled layouts, 3D slice
-transfers, component remapping, pitched/tiled fills, inline uploads, bounded
-GPFIFO queues, cooperative multi-channel scheduling, memory barriers and
-semaphore acquires, reductions and timestamped completion records.
-An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
-are available, including multiword comparisons, logic-generated predicates,
-decode-once prepared programs and structural control-flow analysis.
-An experimental integer SPIR-V emitter provides a 21-family straight-line path
-and a separate budget-limited branch/loop path. It has been checked
-with Khronos validation and independent-lane Vulkan dispatch on an RTX 3080;
-it is not connected to guest submissions or game rendering. The shader badge
-indicates prototype status, not a percentage of full GPU compatibility.
-Regenerate with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
+<!-- POUND-GPU-STATUS:BEGIN -->
+### GPU progress
+
+[![GPU prototype progress](docs/status/gpu.svg)](docs/status/GPU_STATUS.md)
+
+**[GPU status details](docs/status/GPU_STATUS.md)** - checkpoint `e6e19f3f` (2026-10-12).
+The decoded integer prototype covers 22 SM86 families: 21 in the straight-line SPIR-V path
+and all 22 in the bounded branch/loop path. At this checkpoint,
+301,056 complete straight-line lane states pass on RTX 3080; 112,640 bounded states pass
+**on each of RTX 3080 and software Vulkan**. These synthetic checks are not an
+overall GPU completion percentage or evidence that games render.
+
+[GPU development details](docs/GPU_DEVELOPMENT.md) cover the software DMA,
+tiled transfers, inline uploads, mappings, queues, cooperative scheduling and
+semaphore prototypes. Guest OS submission and production rendering remain
+unimplemented. CPU status above is a separate Ballistic snapshot and is not
+refreshed by this GPU update.
+
+Regenerate GPU visuals with `python tools/status/generate_gpu_status.py`.
+<!-- POUND-GPU-STATUS:END -->
+
+Regenerate the CPU snapshot with `python tools/status/generate_status.py --ballistic <path-to-ballistic-checkout>`.
 <!-- POUND-STATUS:END -->
 
 ## Development
