@@ -8,7 +8,7 @@ can read and write mapped GPU memory. Production rendering is still
 unimplemented; no guest OS GPU submission service is connected yet. A separate
 experimental SM86 integer shader decoder and single-lane reference executor are
 available for developing the shader frontend, with an experimental straight-line
-integer SPIR-V emitter for a smaller subset.
+integer SPIR-V emitter for the non-branch subset.
 
 ## Supported command formats
 
@@ -813,17 +813,35 @@ a SPIR-V 1.3 compute module for Vulkan 1.1. This is the first host-GPU shader
 translation step, separate from the command engines and production rendering.
 The core emits words without depending on a Vulkan loader or allocating memory.
 
-The accepted straight-line subset is MOV, unmodified non-.X IADD3 (including
-both carry outputs), IMAD.LOW, LOP3, POPC, SEL, ISETP (including .EX), PLOP3,
-IMNMX, BREV, IABS, NOP and EXIT: 13 instruction families, not all variants of
-those families. Register/immediate operands, RZ/PT, execution predication,
+The accepted straight-line subset is MOV, IADD3, IMAD, LOP3, POPC, SEL, ISETP,
+PLOP3, IMNMX, BREV, IABS, SHF, FLO, PRMT, SGXT, BMSK, LEA, IDP4, IDP2, NOP
+and EXIT: 21 instruction families. This covers all variants currently accepted
+by the experimental decoder for those families, not every hardware encoding.
+Register/immediate operands, RZ/PT, execution predication,
 source/destination aliasing and dual predicate outputs retain the reference
-semantics. Integer overflow wraps at 32 bits, including IABS of INT_MIN.
+semantics. Integer overflow wraps at 32 bits, including IABS of INT_MIN;
+wide multiply-accumulate wraps at 64 bits.
+
+IADD3 supports negation, .X complements, both predicate carry inputs and both
+carry thresholds, including the carry contributed by negated zero. LEA
+supports .HI/.X, intermediate negation, middle-source negation/complement and
+its carry output. IMAD.WIDE/HI use paired 32-bit extended multiplies and
+carry-aware accumulation, so they do not require Vulkan's shaderInt64 feature.
+Both accumulator words are captured before writing a destination pair.
+
+SHF covers all 32 signedness/width/direction/wrap/output-half modes. Every
+dynamic SPIR-V shift operand is bounded below 32, with explicit selection for
+guest distances 0, 32 and 64. FLO covers signed/unsigned, complement and shift
+results, retaining the 0xffffffff sentinel when no qualifying bit exists.
+PRMT implements all seven accepted modes, including byte sign replication.
+SGXT/BMSK retain signed extension and clamp/wrap boundaries. IDP4/IDP2 unpack
+and multiply 8/16-bit fields with independent input signedness and IDP2 byte
+selection; no integer-dot-product extension is needed.
 
 Programs must end with a single unpredicated EXIT and contain at most 1,024
-instructions including that EXIT. Branches, early/predicated exits, missing
-exits, modified/.X IADD3, wide/high IMAD and all other instruction families
-are rejected even if predication would skip them. There is no branch lowering,
+instructions including that EXIT. Branches, early/predicated exits and missing
+exits are rejected even if predication would skip them. Unsupported encodings
+are still rejected by the frontend. There is no branch lowering,
 warp synchronization, guest memory access, floating point, texture access,
 shader-header parsing, graphics-stage input/output or rendering integration.
 
@@ -860,7 +878,7 @@ spirv-val --target-env vulkan1.1 output.spv
 python tools/gpu/make_shader_spirv_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe --spirv-val /path/to/spirv-val
 ```
 
-The synthetic demo emits all 13 families, checks an independently specified
+The synthetic demo emits all 21 families, checks an independently specified
 reference result and produces `integer-compute.bin`, `integer-compute.spv`,
 `lane-input.bin`, `lane-expected.bin` and `spirv-report.json` under
 `build/gpu-shader-spirv-demo`. Without `--spirv-val` it explicitly reports
@@ -870,12 +888,14 @@ compute harness. Unsupported emission does not open/truncate the output file.
 
 Development checks validate generated modules with Khronos `spirv-val` before
 dispatching them in a private Vulkan harness on an NVIDIA GeForce RTX 3080.
-Across 61 programs, all 124,928 lane states (31,981,568 uint32 words) agree;
+Across 147 programs, all 301,056 lane states (77,070,336 uint32 words) agree;
 the same number also passes on Mesa's software Vulkan implementation using
 Clang-emitted modules, separately from the hardware check.
 They compare all 255 registers and the predicate mask against Pound's CPU
 reference, with boundary/random inputs, all 128 starting predicate masks,
-comparison modes and all 256 LOP3 truth tables. Capacity/limit/error preservation
+comparison modes, all 256 LOP3 truth tables, all 65,536 indexed PRMT selectors,
+all SHF modes, carry inputs/outputs, paired multiply aliases and packed signedness.
+Capacity/limit/error preservation
 and deterministic emission are also checked natively and with ASan/UBSan.
 These are synthetic integer compute checks, not measurements of game FPS,
 rendering correctness or a percentage of full shader compatibility.

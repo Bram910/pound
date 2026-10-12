@@ -55,6 +55,8 @@ typedef enum
     SPIRV_SUBTRACT               = 130,
     SPIRV_MULTIPLY               = 132,
     SPIRV_ADD_CARRY              = 149,
+    SPIRV_MULTIPLY_UNSIGNED_WIDE = 151,
+    SPIRV_MULTIPLY_SIGNED_WIDE   = 152,
     SPIRV_BOOL_EQUAL             = 164,
     SPIRV_BOOL_NOT_EQUAL         = 165,
     SPIRV_BOOL_OR                = 166,
@@ -72,10 +74,13 @@ typedef enum
     SPIRV_UNSIGNED_LESS_EQUAL    = 178,
     SPIRV_SIGNED_LESS_EQUAL      = 179,
     SPIRV_SHIFT_RIGHT            = 194,
+    SPIRV_SHIFT_RIGHT_SIGNED     = 195,
     SPIRV_SHIFT_LEFT             = 196,
     SPIRV_OR                     = 197,
     SPIRV_AND                    = 199,
     SPIRV_NOT                    = 200,
+    SPIRV_FIELD_SIGNED           = 202,
+    SPIRV_FIELD_UNSIGNED         = 203,
     SPIRV_REVERSE                = 204,
     SPIRV_COUNT                  = 205,
     SPIRV_LABEL                  = 248,
@@ -261,6 +266,310 @@ logic_lookup(
     return value;
 }
 
+static uint32_t
+modified_source(spirv_builder_t *builder, const gpu_shader_source_t *operand, uint32_t bitwise)
+{
+    const uint32_t value = source(builder, operand);
+    if (0 == operand->negate)
+    {
+        return value;
+    }
+    return bitwise ? unary(builder, SPIRV_NOT, SPIRV_UINT, value)
+                   : binary(builder, SPIRV_SUBTRACT, SPIRV_UINT, constant(builder, 0), value);
+}
+
+static uint32_t
+predicate_word(spirv_builder_t *builder, uint32_t value)
+{
+    return select_value(builder, SPIRV_UINT, value, constant(builder, 1), constant(builder, 0));
+}
+
+static uint32_t
+add_word(spirv_builder_t *builder, uint32_t first, uint32_t second, uint32_t *upper)
+{
+    const uint32_t sum = binary(builder, SPIRV_ADD_CARRY, SPIRV_PAIR, first, second);
+    *upper             = binary(builder, SPIRV_ADD, SPIRV_UINT, *upper, extract(builder, sum, 1));
+    return extract(builder, sum, 0);
+}
+
+static uint32_t
+shift_distance(spirv_builder_t *builder, uint32_t amount, uint32_t width, uint32_t wrap)
+{
+    if (wrap)
+    {
+        return binary(builder, SPIRV_AND, SPIRV_UINT, amount, constant(builder, width - 1U));
+    }
+    const uint32_t limit = constant(builder, width);
+    return select_value(builder,
+                        SPIRV_UINT,
+                        binary(builder, SPIRV_UNSIGNED_LESS, SPIRV_BOOL, amount, limit),
+                        amount,
+                        limit);
+}
+
+static uint32_t
+funnel_word(spirv_builder_t *builder,
+            uint32_t         low,
+            uint32_t         high,
+            uint32_t         distance,
+            uint32_t         right,
+            uint32_t         signed_value,
+            uint32_t         output_high)
+{
+    const uint32_t zero = constant(builder, 0);
+    const uint32_t small
+        = binary(builder, SPIRV_UNSIGNED_LESS, SPIRV_BOOL, distance, constant(builder, 32));
+    const uint32_t full = binary(builder, SPIRV_EQUAL, SPIRV_BOOL, distance, constant(builder, 64));
+    const uint32_t amount = binary(builder, SPIRV_AND, SPIRV_UINT, distance, constant(builder, 31));
+    const uint32_t reverse = binary(builder,
+                                    SPIRV_AND,
+                                    SPIRV_UINT,
+                                    binary(builder, SPIRV_SUBTRACT, SPIRV_UINT, zero, amount),
+                                    constant(builder, 31));
+    const uint32_t empty   = binary(builder, SPIRV_EQUAL, SPIRV_BOOL, amount, zero);
+    const uint32_t fill
+        = right && signed_value
+              ? binary(builder, SPIRV_SHIFT_RIGHT_SIGNED, SPIRV_UINT, high, constant(builder, 31))
+              : zero;
+    const uint32_t right_opcode = signed_value ? SPIRV_SHIFT_RIGHT_SIGNED : SPIRV_SHIFT_RIGHT;
+    uint32_t       narrow;
+    uint32_t       wide;
+    if (right)
+    {
+        if (output_high)
+        {
+            narrow = binary(builder, right_opcode, SPIRV_UINT, high, amount);
+            wide   = fill;
+        }
+        else
+        {
+            const uint32_t cross
+                = select_value(builder,
+                               SPIRV_UINT,
+                               empty,
+                               zero,
+                               binary(builder, SPIRV_SHIFT_LEFT, SPIRV_UINT, high, reverse));
+            narrow = binary(builder,
+                            SPIRV_OR,
+                            SPIRV_UINT,
+                            cross,
+                            binary(builder, SPIRV_SHIFT_RIGHT, SPIRV_UINT, low, amount));
+            wide   = select_value(builder,
+                                SPIRV_UINT,
+                                full,
+                                fill,
+                                binary(builder, right_opcode, SPIRV_UINT, high, amount));
+        }
+    }
+    else if (output_high)
+    {
+        const uint32_t cross
+            = select_value(builder,
+                           SPIRV_UINT,
+                           empty,
+                           zero,
+                           binary(builder, SPIRV_SHIFT_RIGHT, SPIRV_UINT, low, reverse));
+        narrow = binary(builder,
+                        SPIRV_OR,
+                        SPIRV_UINT,
+                        cross,
+                        binary(builder, SPIRV_SHIFT_LEFT, SPIRV_UINT, high, amount));
+        wide   = select_value(builder,
+                            SPIRV_UINT,
+                            full,
+                            zero,
+                            binary(builder, SPIRV_SHIFT_LEFT, SPIRV_UINT, low, amount));
+    }
+    else
+    {
+        narrow = binary(builder, SPIRV_SHIFT_LEFT, SPIRV_UINT, low, amount);
+        wide   = zero;
+    }
+    return select_value(builder, SPIRV_UINT, small, narrow, wide);
+}
+
+static uint32_t
+bit_field(spirv_builder_t *builder,
+          uint32_t         value,
+          uint32_t         offset,
+          uint32_t         width,
+          uint32_t         signed_value)
+{
+    const uint32_t result = builder->next_id++;
+    EMIT(builder,
+         signed_value ? SPIRV_FIELD_SIGNED : SPIRV_FIELD_UNSIGNED,
+         SPIRV_UINT,
+         result,
+         value,
+         offset,
+         width);
+    return result;
+}
+
+static uint32_t
+leading_bit(spirv_builder_t *builder, uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    const uint32_t zero = constant(builder, 0);
+    if (instruction->compare_signed)
+    {
+        value = select_value(builder,
+                             SPIRV_UINT,
+                             compare(builder, value, zero, GPU_SHADER_COMPARE_LT, 1),
+                             unary(builder, SPIRV_NOT, SPIRV_UINT, value),
+                             value);
+    }
+    const uint32_t empty = binary(builder, SPIRV_EQUAL, SPIRV_BOOL, value, zero);
+    for (uint32_t distance = 1U; distance < 32U; distance *= 2U)
+    {
+        value = binary(
+            builder,
+            SPIRV_OR,
+            SPIRV_UINT,
+            value,
+            binary(builder, SPIRV_SHIFT_RIGHT, SPIRV_UINT, value, constant(builder, distance)));
+    }
+    const uint32_t bits = unary(builder, SPIRV_COUNT, SPIRV_UINT, value);
+    const uint32_t result
+        = instruction->return_shift
+              ? binary(builder, SPIRV_SUBTRACT, SPIRV_UINT, constant(builder, 32), bits)
+              : binary(builder, SPIRV_SUBTRACT, SPIRV_UINT, bits, constant(builder, 1));
+    return select_value(builder, SPIRV_UINT, empty, constant(builder, UINT32_MAX), result);
+}
+
+static uint32_t
+permute_word(spirv_builder_t          *builder,
+             uint32_t                  low,
+             uint32_t                  selector,
+             uint32_t                  high,
+             gpu_shader_permute_mode_t mode)
+{
+    const uint32_t zero  = constant(builder, 0);
+    const uint32_t start = binary(builder, SPIRV_AND, SPIRV_UINT, selector, constant(builder, 3));
+    uint32_t       value = zero;
+    for (uint32_t octet = 0; octet < 4U; ++octet)
+    {
+        const uint32_t position  = constant(builder, octet);
+        uint32_t       selection = start;
+        switch (mode)
+        {
+            case GPU_SHADER_PERMUTE_INDEX:
+                selection = bit_field(
+                    builder, selector, constant(builder, 4U * octet), constant(builder, 4), 0);
+                break;
+            case GPU_SHADER_PERMUTE_FORWARD4:
+                selection = binary(builder, SPIRV_ADD, SPIRV_UINT, start, position);
+                break;
+            case GPU_SHADER_PERMUTE_BACKWARD4:
+                selection
+                    = binary(builder,
+                             SPIRV_SUBTRACT,
+                             SPIRV_UINT,
+                             binary(builder, SPIRV_ADD, SPIRV_UINT, start, constant(builder, 8)),
+                             position);
+                break;
+            case GPU_SHADER_PERMUTE_CLAMP_LEFT:
+            case GPU_SHADER_PERMUTE_CLAMP_RIGHT: {
+                const uint32_t less
+                    = binary(builder, SPIRV_UNSIGNED_LESS, SPIRV_BOOL, position, start);
+                selection = mode == GPU_SHADER_PERMUTE_CLAMP_LEFT
+                                ? select_value(builder, SPIRV_UINT, less, start, position)
+                                : select_value(builder, SPIRV_UINT, less, position, start);
+                break;
+            }
+            case GPU_SHADER_PERMUTE_REPLICATE16:
+                selection = binary(
+                    builder,
+                    SPIRV_ADD,
+                    SPIRV_UINT,
+                    binary(builder,
+                           SPIRV_MULTIPLY,
+                           SPIRV_UINT,
+                           binary(builder, SPIRV_AND, SPIRV_UINT, start, constant(builder, 1)),
+                           constant(builder, 2)),
+                    constant(builder, octet & 1U));
+                break;
+            default:
+                break;
+        }
+        const uint32_t from_high
+            = binary(builder,
+                     SPIRV_NOT_EQUAL,
+                     SPIRV_BOOL,
+                     binary(builder, SPIRV_AND, SPIRV_UINT, selection, constant(builder, 4)),
+                     zero);
+        const uint32_t offset
+            = binary(builder,
+                     SPIRV_MULTIPLY,
+                     SPIRV_UINT,
+                     binary(builder, SPIRV_AND, SPIRV_UINT, selection, constant(builder, 3)),
+                     constant(builder, 8));
+        uint32_t selected = bit_field(builder,
+                                      select_value(builder, SPIRV_UINT, from_high, high, low),
+                                      offset,
+                                      constant(builder, 8),
+                                      0);
+        if (mode == GPU_SHADER_PERMUTE_INDEX)
+        {
+            const uint32_t sign_mode
+                = binary(builder,
+                         SPIRV_NOT_EQUAL,
+                         SPIRV_BOOL,
+                         binary(builder, SPIRV_AND, SPIRV_UINT, selection, constant(builder, 8)),
+                         zero);
+            const uint32_t sign = select_value(builder,
+                                               SPIRV_UINT,
+                                               binary(builder,
+                                                      SPIRV_UNSIGNED_GREATER_EQUAL,
+                                                      SPIRV_BOOL,
+                                                      selected,
+                                                      constant(builder, 128)),
+                                               constant(builder, 255),
+                                               zero);
+            selected            = select_value(builder, SPIRV_UINT, sign_mode, sign, selected);
+        }
+        value = binary(
+            builder,
+            SPIRV_OR,
+            SPIRV_UINT,
+            value,
+            binary(builder, SPIRV_SHIFT_LEFT, SPIRV_UINT, selected, constant(builder, octet * 8U)));
+    }
+    return value;
+}
+
+static uint32_t
+dot_word(spirv_builder_t                *builder,
+         uint32_t                        first,
+         uint32_t                        second,
+         uint32_t                        accumulator,
+         const gpu_shader_instruction_t *instruction)
+{
+    const uint32_t two   = instruction->operation == GPU_SHADER_IDP2;
+    const uint32_t width = two ? 16U : 8U;
+    const uint32_t count = two ? 2U : 4U;
+    uint32_t       value = accumulator;
+    for (uint32_t element = 0; element < count; ++element)
+    {
+        const uint32_t left = bit_field(builder,
+                                        first,
+                                        constant(builder, width * element),
+                                        constant(builder, width),
+                                        instruction->dot_signed[0]);
+        const uint32_t right
+            = bit_field(builder,
+                        second,
+                        constant(builder, 8U * (element + 2U * instruction->dot_high)),
+                        constant(builder, 8),
+                        instruction->dot_signed[1]);
+        value = binary(builder,
+                       SPIRV_ADD,
+                       SPIRV_UINT,
+                       value,
+                       binary(builder, SPIRV_MULTIPLY, SPIRV_UINT, left, right));
+    }
+    return value;
+}
+
 static error_t
 validate(const gpu_shader_program_t *program)
 {
@@ -290,18 +599,7 @@ validate(const gpu_shader_program_t *program)
                 }
                 break;
             case GPU_SHADER_IADD3:
-                if (instruction->carry_in || instruction->sources[0].negate
-                    || instruction->sources[1].negate || instruction->sources[2].negate)
-                {
-                    return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
-                }
-                break;
             case GPU_SHADER_IMAD:
-                if (instruction->multiply_mode != GPU_SHADER_MULTIPLY_LOW)
-                {
-                    return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
-                }
-                break;
             case GPU_SHADER_MOV:
             case GPU_SHADER_LOP3:
             case GPU_SHADER_POPC:
@@ -311,6 +609,14 @@ validate(const gpu_shader_program_t *program)
             case GPU_SHADER_IMNMX:
             case GPU_SHADER_BREV:
             case GPU_SHADER_IABS:
+            case GPU_SHADER_SHF:
+            case GPU_SHADER_FLO:
+            case GPU_SHADER_PRMT:
+            case GPU_SHADER_SGXT:
+            case GPU_SHADER_BMSK:
+            case GPU_SHADER_LEA:
+            case GPU_SHADER_IDP4:
+            case GPU_SHADER_IDP2:
             case GPU_SHADER_NOP:
                 break;
             default:
@@ -355,13 +661,19 @@ build_constants(spirv_builder_t *builder, const gpu_shader_program_t *program)
 static void
 emit_instruction(spirv_builder_t *builder, const gpu_shader_instruction_t *instruction)
 {
-    const uint32_t zero   = constant(builder, 0);
-    const uint32_t first  = source(builder, &instruction->sources[0]);
-    const uint32_t second = source(builder, &instruction->sources[1]);
-    const uint32_t third  = source(builder, &instruction->sources[2]);
+    const uint32_t zero    = constant(builder, 0);
+    const uint32_t bitwise = instruction->operation == GPU_SHADER_POPC
+                             || instruction->operation == GPU_SHADER_FLO
+                             || ((instruction->operation == GPU_SHADER_IADD3
+                                  || instruction->operation == GPU_SHADER_LEA)
+                                 && instruction->carry_in);
+    const uint32_t first  = modified_source(builder, &instruction->sources[0], bitwise);
+    const uint32_t second = modified_source(builder, &instruction->sources[1], bitwise);
+    const uint32_t third  = modified_source(builder, &instruction->sources[2], bitwise);
     const uint32_t active
         = predicate(builder, instruction->predicate, instruction->predicate_invert);
     uint32_t value                = zero;
+    uint32_t upper_result         = zero;
     uint32_t predicate_results[2] = { SPIRV_FALSE, SPIRV_FALSE };
     switch (instruction->operation)
     {
@@ -369,25 +681,185 @@ emit_instruction(spirv_builder_t *builder, const gpu_shader_instruction_t *instr
             value = first;
             break;
         case GPU_SHADER_IADD3: {
-            const uint32_t first_sum  = binary(builder, SPIRV_ADD_CARRY, SPIRV_PAIR, first, second);
-            const uint32_t second_sum = binary(
-                builder, SPIRV_ADD_CARRY, SPIRV_PAIR, extract(builder, first_sum, 0), third);
-            value                 = extract(builder, second_sum, 0);
-            const uint32_t carry0 = binary(
-                builder, SPIRV_NOT_EQUAL, SPIRV_BOOL, extract(builder, first_sum, 1), zero);
-            const uint32_t carry1 = binary(
-                builder, SPIRV_NOT_EQUAL, SPIRV_BOOL, extract(builder, second_sum, 1), zero);
-            predicate_results[0] = binary(builder, SPIRV_BOOL_OR, SPIRV_BOOL, carry0, carry1);
-            predicate_results[1] = binary(builder, SPIRV_BOOL_AND, SPIRV_BOOL, carry0, carry1);
+            uint32_t upper = zero;
+            value          = add_word(builder, first, second, &upper);
+            value          = add_word(builder, value, third, &upper);
+            if (instruction->carry_in)
+            {
+                const uint32_t *input  = instruction->predicate_sources;
+                const uint32_t *invert = instruction->predicate_source_inverts;
+                for (uint32_t index = 0; index < 2U; ++index, ++input, ++invert)
+                {
+                    value = add_word(builder,
+                                     value,
+                                     predicate_word(builder, predicate(builder, *input, *invert)),
+                                     &upper);
+                }
+            }
+            else
+            {
+                const uint32_t             values[3] = { first, second, third };
+                const uint32_t            *operand   = values;
+                const gpu_shader_source_t *original  = instruction->sources;
+                for (uint32_t index = 0; index < 3U; ++index, ++operand, ++original)
+                {
+                    if (original->negate)
+                    {
+                        upper = binary(
+                            builder,
+                            SPIRV_ADD,
+                            SPIRV_UINT,
+                            upper,
+                            predicate_word(
+                                builder, binary(builder, SPIRV_EQUAL, SPIRV_BOOL, *operand, zero)));
+                    }
+                }
+            }
+            predicate_results[0] = binary(builder, SPIRV_NOT_EQUAL, SPIRV_BOOL, upper, zero);
+            predicate_results[1] = binary(
+                builder, SPIRV_UNSIGNED_GREATER_EQUAL, SPIRV_BOOL, upper, constant(builder, 2));
             break;
         }
         case GPU_SHADER_IMAD:
-            value = binary(builder,
-                           SPIRV_ADD,
-                           SPIRV_UINT,
-                           binary(builder, SPIRV_MULTIPLY, SPIRV_UINT, first, second),
-                           third);
+            if (instruction->multiply_mode == GPU_SHADER_MULTIPLY_LOW)
+            {
+                value = binary(builder,
+                               SPIRV_ADD,
+                               SPIRV_UINT,
+                               binary(builder, SPIRV_MULTIPLY, SPIRV_UINT, first, second),
+                               third);
+            }
+            else
+            {
+                const uint32_t product
+                    = binary(builder,
+                             instruction->compare_signed ? SPIRV_MULTIPLY_SIGNED_WIDE
+                                                         : SPIRV_MULTIPLY_UNSIGNED_WIDE,
+                             SPIRV_PAIR,
+                             first,
+                             second);
+                const uint32_t accumulator = instruction->sources[2].value;
+                const uint32_t high        = accumulator == GPU_SHADER_ZERO_REGISTER
+                                                 ? zero
+                                                 : builder->registers[accumulator + 1U];
+                upper_result
+                    = binary(builder, SPIRV_ADD, SPIRV_UINT, extract(builder, product, 1), high);
+                value = add_word(builder, extract(builder, product, 0), third, &upper_result);
+                if (instruction->multiply_mode == GPU_SHADER_MULTIPLY_HIGH)
+                {
+                    value = upper_result;
+                }
+            }
             break;
+        case GPU_SHADER_IDP4:
+        case GPU_SHADER_IDP2:
+            value = dot_word(builder, first, second, third, instruction);
+            break;
+        case GPU_SHADER_SHF: {
+            const uint32_t wide = instruction->shift_type == GPU_SHADER_SHIFT_S64
+                                  || instruction->shift_type == GPU_SHADER_SHIFT_U64;
+            const uint32_t signed_value = instruction->shift_type == GPU_SHADER_SHIFT_S64
+                                          || instruction->shift_type == GPU_SHADER_SHIFT_S32;
+            value = funnel_word(
+                builder,
+                first,
+                third,
+                shift_distance(builder, second, wide ? 64U : 32U, instruction->shift_wrap),
+                instruction->shift_right,
+                signed_value,
+                instruction->shift_high);
+            break;
+        }
+        case GPU_SHADER_FLO:
+            value = leading_bit(builder, first, instruction);
+            break;
+        case GPU_SHADER_PRMT:
+            value = permute_word(builder, first, second, third, instruction->permute_mode);
+            break;
+        case GPU_SHADER_SGXT:
+            value = bit_field(builder,
+                              first,
+                              zero,
+                              shift_distance(builder, second, 32U, instruction->shift_wrap),
+                              instruction->compare_signed);
+            break;
+        case GPU_SHADER_BMSK: {
+            const uint32_t position = shift_distance(builder, first, 32U, instruction->shift_wrap);
+            const uint32_t width    = shift_distance(builder, second, 32U, instruction->shift_wrap);
+            const uint32_t full     = constant(builder, 32);
+            const uint32_t mask     = select_value(
+                builder,
+                SPIRV_UINT,
+                binary(builder, SPIRV_EQUAL, SPIRV_BOOL, width, full),
+                constant(builder, UINT32_MAX),
+                binary(builder,
+                       SPIRV_SUBTRACT,
+                       SPIRV_UINT,
+                       binary(builder,
+                              SPIRV_SHIFT_LEFT,
+                              SPIRV_UINT,
+                              constant(builder, 1),
+                              binary(builder, SPIRV_AND, SPIRV_UINT, width, constant(builder, 31))),
+                       constant(builder, 1)));
+            value = select_value(
+                builder,
+                SPIRV_UINT,
+                binary(builder, SPIRV_EQUAL, SPIRV_BOOL, position, full),
+                zero,
+                binary(builder,
+                       SPIRV_SHIFT_LEFT,
+                       SPIRV_UINT,
+                       mask,
+                       binary(builder, SPIRV_AND, SPIRV_UINT, position, constant(builder, 31))));
+            break;
+        }
+        case GPU_SHADER_LEA: {
+            const uint32_t shifted
+                = instruction->shift_high
+                      ? funnel_word(builder,
+                                    first,
+                                    third,
+                                    constant(builder, 32U - instruction->address_shift),
+                                    1,
+                                    0,
+                                    0)
+                      : binary(builder,
+                               SPIRV_SHIFT_LEFT,
+                               SPIRV_UINT,
+                               first,
+                               constant(builder, instruction->address_shift));
+            uint32_t upper = zero;
+            value          = instruction->intermediate_negate
+                                 ? unary(builder, SPIRV_NOT, SPIRV_UINT, shifted)
+                                 : shifted;
+            if (instruction->intermediate_negate && !instruction->carry_in)
+            {
+                value = add_word(builder, value, constant(builder, 1), &upper);
+            }
+            value = add_word(builder, value, second, &upper);
+            if (instruction->carry_in)
+            {
+                value = add_word(
+                    builder,
+                    value,
+                    predicate_word(
+                        builder,
+                        predicate(builder, instruction->condition, instruction->condition_invert)),
+                    &upper);
+            }
+            else if (instruction->sources[1].negate)
+            {
+                upper
+                    = binary(builder,
+                             SPIRV_ADD,
+                             SPIRV_UINT,
+                             upper,
+                             predicate_word(
+                                 builder, binary(builder, SPIRV_EQUAL, SPIRV_BOOL, second, zero)));
+            }
+            predicate_results[0] = binary(builder, SPIRV_NOT_EQUAL, SPIRV_BOOL, upper, zero);
+            break;
+        }
         case GPU_SHADER_LOP3:
             value = logic_lookup(builder, first, second, third, instruction->lookup);
             predicate_results[0]
@@ -397,12 +869,7 @@ emit_instruction(spirv_builder_t *builder, const gpu_shader_instruction_t *instr
                           instruction->boolean_operation);
             break;
         case GPU_SHADER_POPC:
-            value = unary(builder,
-                          SPIRV_COUNT,
-                          SPIRV_UINT,
-                          instruction->sources[0].negate
-                              ? unary(builder, SPIRV_NOT, SPIRV_UINT, first)
-                              : first);
+            value = unary(builder, SPIRV_COUNT, SPIRV_UINT, first);
             break;
         case GPU_SHADER_SEL:
             value = select_value(
@@ -510,6 +977,16 @@ emit_instruction(spirv_builder_t *builder, const gpu_shader_instruction_t *instr
     {
         builder->registers[instruction->destination] = select_value(
             builder, SPIRV_UINT, active, value, builder->registers[instruction->destination]);
+        if (instruction->operation == GPU_SHADER_IMAD
+            && instruction->multiply_mode == GPU_SHADER_MULTIPLY_WIDE)
+        {
+            builder->registers[instruction->destination + 1U]
+                = select_value(builder,
+                               SPIRV_UINT,
+                               active,
+                               upper_result,
+                               builder->registers[instruction->destination + 1U]);
+        }
     }
 }
 

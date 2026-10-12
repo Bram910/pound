@@ -309,7 +309,7 @@ semaphore acquires, reductions and timestamped completion records.
 An experimental 22-family SM86 integer decoder and bounded single-lane reference executor
 are available, including multiword comparisons, logic-generated predicates,
 decode-once prepared programs and structural control-flow analysis.
-An experimental 13-family straight-line integer SPIR-V emitter has been checked
+An experimental 21-family straight-line integer SPIR-V emitter has been checked
 with Khronos validation and independent-lane Vulkan dispatch on an RTX 3080;
 it is not connected to guest submissions or game rendering. The shader badge
 indicates prototype status, not a percentage of full GPU compatibility.
