@@ -38,12 +38,53 @@ DEVELOPER PLEASE GIVE US YOUR SUPPORT**
 
 [![GPU prototype progress](docs/status/gpu.svg)](docs/status/GPU_STATUS.md)
 
-**[GPU status details](docs/status/GPU_STATUS.md)** - checkpoint `e6e19f3f` (2026-10-12).
-The decoded integer prototype covers 22 SM86 families: 21 in the straight-line SPIR-V path
-and all 22 in the bounded branch/loop path. At this checkpoint,
+**[GPU status details](docs/status/GPU_STATUS.md)** - updated 2026-10-13.
+The decoded prototype covers 32 SM86 families: 31 in the straight-line SPIR-V path
+and all 32 in the bounded branch/loop path. At the earlier integer
+emitter checkpoint `e6e19f3f` (22-family scope),
 301,056 complete straight-line lane states pass on RTX 3080; 112,640 bounded states pass
 **on each of RTX 3080 and software Vulkan**. These synthetic checks are not an
 overall GPU completion percentage or evidence that games render.
+
+**New FP32 comparison/min-max support:** FSETP and FMNMX pass
+4,718,592 native SM86 result comparisons and
+62,464 full Vulkan lane states per backend.
+
+**FP32 addition/multiplication:** FADD and FMUL pass
+12,582,912 native result checks and
+77,824 complete Vulkan states per backend,
+including all four rounding modes, FTZ and saturation.
+
+**Fused FP32 multiply-add:** FFMA passes 29,360,128 native result checks
+and 45,056 complete Vulkan states per backend. The new checks also
+correct a rounding-dependent underflow boundary shared by FMUL and FFMA.
+**FP32 / 32-bit integer conversions:** F2I and I2F pass
+10,289,152 native result checks and
+45,056 complete Vulkan states per backend.
+Signed/unsigned results, four rounding modes and F2I FTZ/NaN handling are covered.
+
+**FP32 integral rounding:** FRND passes 2,752,512 native results
+and 45,056 complete Vulkan states per backend, including
+nearest-even, floor, ceil, truncation, FTZ, abs/neg and signed-zero behavior.
+
+**I2FP conversion encoding:** signed/unsigned 32-bit to FP32 with RN/RZ passes
+1,474,560 native results and 45,056
+complete Vulkan states per backend. Other I2FP sizes/modes reject explicitly.
+
+**Scalar FP32 to FP16 conversion:** F2F.F16.F32 passes 2,752,512
+native results and 45,056 complete Vulkan states per backend.
+Four rounding modes, FTZ, subnormals, overflow and NaNs are covered.
+**Scalar FP16 to FP32 widening:** F2F.F32.F16 passes 12,582,912
+native comparisons covering every binary16 bit pattern and 45,056
+complete Vulkan states per backend. Register sources, FTZ and abs/neg are verified.
+FP16 arithmetic, packed conversions and graphics rendering remain unimplemented.
+
+The optional **PoundGpuCompute** tool now runs the supported subset through
+Vulkan, including resumable bounded state. Its separate runner checks pass
+37,888 full states across 58 dispatches **per backend**.
+Reusable sessions and compiled kernels avoid rebuilding the device/pipeline
+for each dispatch; another 63,168 states pass per backend while alternating
+3 kernels in one session. These remain compute-only development tools.
 
 [GPU development details](docs/GPU_DEVELOPMENT.md) cover the software DMA,
 tiled transfers, inline uploads, mappings, queues, cooperative scheduling and

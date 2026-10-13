@@ -1,18 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="714" viewBox="0 0 900 714" role="img" aria-labelledby="title description" font-family="Segoe UI,Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1516" viewBox="0 0 900 1516" role="img" aria-labelledby="title description" font-family="Segoe UI,Helvetica,Arial,sans-serif">
 <title id="title">Pound GPU development checkpoint</title>
-<desc id="description">Limited SM86 integer compute prototype. Family counts refer only to the decoded subset, not all GPU instructions. Game rendering is not implemented.</desc>
-<rect x="1" y="1" width="898" height="712" rx="8" fill="#0d1117" stroke="#30363d"/>
+<desc id="description">Limited SM86 compute prototype with FP32 arithmetic, integral rounding and scalar conversions. Family counts refer only to the decoded subset, not all GPU instructions. Game rendering is not implemented.</desc>
+<rect x="1" y="1" width="898" height="1514" rx="8" fill="#0d1117" stroke="#30363d"/>
 <text x="24" y="37" font-size="22" fill="#e6edf3" font-weight="700">POUND / GPU PROGRESS</text>
-<text x="635" y="35" font-size="13" fill="#8b949e" font-weight="400">2026-10-12  |  e6e19f3f</text>
-<text x="24" y="65" font-size="16" fill="#d29922" font-weight="400">SM86 integer compute prototype - not game rendering</text>
+<text x="565" y="35" font-size="13" fill="#8b949e" font-weight="400">2026-10-13  |  integer baseline e6e19f3f</text>
+<text x="24" y="65" font-size="16" fill="#d29922" font-weight="400">SM86 compute prototype / FP32 arithmetic, rounding and scalar conversions</text>
 <rect x="24" y="84" width="204" height="84" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="38" y="123" font-size="28" fill="#3fb950" font-weight="700">22</text>
+<text x="38" y="123" font-size="28" fill="#3fb950" font-weight="700">32</text>
 <text x="38" y="149" font-size="13" fill="#8b949e" font-weight="400">Decoded families</text>
 <rect x="240" y="84" width="204" height="84" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="254" y="123" font-size="28" fill="#3fb950" font-weight="700">21/22</text>
+<text x="254" y="123" font-size="28" fill="#3fb950" font-weight="700">31/32</text>
 <text x="254" y="149" font-size="13" fill="#8b949e" font-weight="400">Straight-line SPIR-V</text>
 <rect x="456" y="84" width="204" height="84" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="470" y="123" font-size="28" fill="#3fb950" font-weight="700">22/22</text>
+<text x="470" y="123" font-size="28" fill="#3fb950" font-weight="700">32/32</text>
 <text x="470" y="149" font-size="13" fill="#8b949e" font-weight="400">Bounded SPIR-V</text>
 <rect x="672" y="84" width="204" height="84" rx="8" fill="#161b22" stroke="#30363d"/>
 <text x="686" y="123" font-size="28" fill="#3fb950" font-weight="700">0</text>
@@ -63,27 +63,102 @@
 <text x="734" y="303" font-size="12" fill="#7ee787" font-weight="600">IDP4</text>
 <rect x="804" y="282" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
 <text x="812" y="303" font-size="12" fill="#7ee787" font-weight="600">IDP2</text>
-<text x="24" y="346" font-size="13" fill="#8b949e" font-weight="700">VALIDATION AT THIS CHECKPOINT</text>
-<rect x="24" y="360" width="420" height="101" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="38" y="390" font-size="21" fill="#e6edf3" font-weight="600">301,056 full lane states</text>
-<text x="38" y="414" font-size="13" fill="#e6edf3" font-weight="400">RTX 3080 / straight-line</text>
-<text x="38" y="440" font-size="12" fill="#8b949e" font-weight="400">147 programs / 256 words per lane</text>
-<rect x="456" y="360" width="420" height="101" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="470" y="390" font-size="21" fill="#e6edf3" font-weight="600">112,640 full lane states</text>
-<text x="470" y="414" font-size="13" fill="#e6edf3" font-weight="400">Each: RTX 3080 + software Vulkan</text>
-<text x="470" y="440" font-size="12" fill="#8b949e" font-weight="400">55 programs / 261 words per lane / 4 budgets</text>
-<text x="24" y="483" font-size="13" fill="#e6edf3" font-weight="400">spirv-val before every dispatch; complete state compared against CPU reference.</text>
-<text x="24" y="505" font-size="13" fill="#e6edf3" font-weight="400">13 independent control fixtures / 16 states per backend; resumption and budget 4,096.</text>
-<text x="24" y="538" font-size="13" fill="#8b949e" font-weight="700">INTEGRATION MILESTONES</text>
-<circle cx="29" cy="557" r="4" fill="#58a6ff"/>
-<text x="42" y="561" font-size="13" fill="#e6edf3" font-weight="400">Mappings, DMA, tiled transfers, uploads, queues, semaphores</text>
-<text x="706" y="561" font-size="13" fill="#58a6ff" font-weight="400">Software prototype</text>
-<circle cx="29" cy="583" r="4" fill="#3fb950"/>
-<text x="42" y="587" font-size="13" fill="#e6edf3" font-weight="400">Integer decode, prepared programs, GPU branch/loop emission</text>
-<text x="706" y="587" font-size="13" fill="#3fb950" font-weight="400">Verified subset</text>
-<circle cx="29" cy="609" r="4" fill="#8b949e"/>
-<text x="42" y="613" font-size="13" fill="#e6edf3" font-weight="400">Guest OS submission, graphics draws, textures and presentation</text>
-<text x="706" y="613" font-size="13" fill="#8b949e" font-weight="400">Not implemented</text>
-<text x="24" y="645" font-size="13" fill="#8b949e" font-weight="400">Still missing: FP/SIMD, shader headers, graphics stages, warp/shared-memory synchronization.</text>
-<text x="24" y="677" font-size="13" fill="#d29922" font-weight="400">Synthetic independent-lane checks. Counts are not cumulative, game FPS or overall GPU completion.</text>
+<rect x="24" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="32" y="343" font-size="12" fill="#7ee787" font-weight="600">FSETP</text>
+<rect x="102" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="110" y="343" font-size="12" fill="#7ee787" font-weight="600">FMNMX</text>
+<rect x="180" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="188" y="343" font-size="12" fill="#7ee787" font-weight="600">FADD</text>
+<rect x="258" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="266" y="343" font-size="12" fill="#7ee787" font-weight="600">FMUL</text>
+<rect x="336" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="344" y="343" font-size="12" fill="#7ee787" font-weight="600">FFMA</text>
+<rect x="414" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="422" y="343" font-size="12" fill="#7ee787" font-weight="600">F2I</text>
+<rect x="492" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="500" y="343" font-size="12" fill="#7ee787" font-weight="600">I2F</text>
+<rect x="570" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="578" y="343" font-size="12" fill="#7ee787" font-weight="600">FRND</text>
+<rect x="648" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="656" y="343" font-size="12" fill="#7ee787" font-weight="600">I2FP</text>
+<rect x="726" y="322" width="72" height="32" rx="8" fill="#12301d" stroke="#238636"/>
+<text x="734" y="343" font-size="12" fill="#7ee787" font-weight="600">F2F</text>
+<text x="24" y="386" font-size="13" fill="#8b949e" font-weight="700">INTEGER EMITTER CHECKPOINT @ e6e19f3f (22-FAMILY SCOPE)</text>
+<rect x="24" y="400" width="420" height="101" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="38" y="430" font-size="21" fill="#e6edf3" font-weight="600">301,056 full lane states</text>
+<text x="38" y="454" font-size="13" fill="#e6edf3" font-weight="400">RTX 3080 / straight-line</text>
+<text x="38" y="480" font-size="12" fill="#8b949e" font-weight="400">147 programs / 256 words per lane</text>
+<rect x="456" y="400" width="420" height="101" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="470" y="430" font-size="21" fill="#e6edf3" font-weight="600">112,640 full lane states</text>
+<text x="470" y="454" font-size="13" fill="#e6edf3" font-weight="400">Each: RTX 3080 + software Vulkan</text>
+<text x="470" y="480" font-size="12" fill="#8b949e" font-weight="400">55 programs / 261 words per lane / 4 budgets</text>
+<text x="24" y="523" font-size="13" fill="#e6edf3" font-weight="400">spirv-val before every dispatch; complete state compared against CPU reference.</text>
+<text x="24" y="545" font-size="13" fill="#e6edf3" font-weight="400">13 independent control fixtures / 16 states per backend; resumption and budget 4,096.</text>
+<text x="24" y="571" font-size="13" fill="#58a6ff" font-weight="400">Public runner: 37,888 states per backend / 58 dispatches / 50 simulated host failures.</text>
+<text x="24" y="596" font-size="13" fill="#58a6ff" font-weight="400">Reused sessions: 63,168 states per backend / 384 dispatches / 3 alternating kernels.</text>
+<text x="24" y="632" font-size="13" fill="#8b949e" font-weight="700">FP32 SHADER CHECKS</text>
+<text x="456" y="632" font-size="13" fill="#8b949e" font-weight="400">Vulkan states: per backend (RTX 3080 + software)</text>
+<rect x="24" y="646" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="38" y="668" font-size="13" fill="#8b949e" font-weight="700">COMPARISON + MIN/MAX</text>
+<text x="38" y="700" font-size="24" fill="#7ee787" font-weight="600">4,718,592</text>
+<text x="38" y="722" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="38" y="745" font-size="12" fill="#e6edf3" font-weight="400">62,464 full states / 122 dispatches</text>
+<text x="38" y="771" font-size="12" fill="#8b949e" font-weight="400">648 independent edge states per path</text>
+<rect x="456" y="646" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="470" y="668" font-size="13" fill="#8b949e" font-weight="700">ADDITION + MULTIPLICATION</text>
+<text x="470" y="700" font-size="24" fill="#7ee787" font-weight="600">12,582,912</text>
+<text x="470" y="722" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="470" y="745" font-size="12" fill="#e6edf3" font-weight="400">77,824 full states / 152 dispatches</text>
+<text x="470" y="771" font-size="12" fill="#8b949e" font-weight="400">1,800 exact edge states per path</text>
+<rect x="24" y="812" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="38" y="834" font-size="13" fill="#8b949e" font-weight="700">FUSED MULTIPLY-ADD</text>
+<text x="38" y="866" font-size="24" fill="#7ee787" font-weight="600">29,360,128</text>
+<text x="38" y="888" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="38" y="911" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="38" y="937" font-size="12" fill="#8b949e" font-weight="400">538 exact edge states per path</text>
+<rect x="456" y="812" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="470" y="834" font-size="13" fill="#8b949e" font-weight="700">FP32 / INTEGER CONVERSIONS</text>
+<text x="470" y="866" font-size="24" fill="#7ee787" font-weight="600">10,289,152</text>
+<text x="470" y="888" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="470" y="911" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="470" y="937" font-size="12" fill="#8b949e" font-weight="400">512 exact edge states per path</text>
+<rect x="24" y="978" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="38" y="1000" font-size="13" fill="#8b949e" font-weight="700">FP32 INTEGRAL ROUNDING</text>
+<text x="38" y="1032" font-size="24" fill="#7ee787" font-weight="600">2,752,512</text>
+<text x="38" y="1054" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="38" y="1077" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="38" y="1103" font-size="12" fill="#8b949e" font-weight="400">512 exact edge states per path</text>
+<rect x="456" y="978" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="470" y="1000" font-size="13" fill="#8b949e" font-weight="700">I2FP / 32-BIT TO FP32</text>
+<text x="470" y="1032" font-size="24" fill="#7ee787" font-weight="600">1,474,560</text>
+<text x="470" y="1054" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="470" y="1077" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="470" y="1103" font-size="12" fill="#8b949e" font-weight="400">512 exact edge states per path</text>
+<rect x="24" y="1144" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="38" y="1166" font-size="13" fill="#8b949e" font-weight="700">FP32 TO FP16 CONVERSION</text>
+<text x="38" y="1198" font-size="24" fill="#7ee787" font-weight="600">2,752,512</text>
+<text x="38" y="1220" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="38" y="1243" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="38" y="1269" font-size="12" fill="#8b949e" font-weight="400">512 exact edge states per path</text>
+<rect x="456" y="1144" width="420" height="154" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="470" y="1166" font-size="13" fill="#8b949e" font-weight="700">FP16 TO FP32 WIDENING</text>
+<text x="470" y="1198" font-size="24" fill="#7ee787" font-weight="600">12,582,912</text>
+<text x="470" y="1220" font-size="12" fill="#e6edf3" font-weight="400">native SM86 results</text>
+<text x="470" y="1243" font-size="12" fill="#e6edf3" font-weight="400">45,056 full states / 88 dispatches</text>
+<text x="470" y="1269" font-size="12" fill="#8b949e" font-weight="400">4,096 binary16 oracle states per path</text>
+<text x="24" y="1322" font-size="13" fill="#8b949e" font-weight="700">INTEGRATION MILESTONES</text>
+<circle cx="29" cy="1341" r="4" fill="#58a6ff"/>
+<text x="42" y="1345" font-size="13" fill="#e6edf3" font-weight="400">Mappings, DMA, tiled transfers, uploads, queues, semaphores</text>
+<text x="706" y="1345" font-size="13" fill="#58a6ff" font-weight="400">Software prototype</text>
+<circle cx="29" cy="1367" r="4" fill="#3fb950"/>
+<text x="42" y="1371" font-size="13" fill="#e6edf3" font-weight="400">Integer + FP32 arithmetic/conversions, GPU branches/loops</text>
+<text x="706" y="1371" font-size="13" fill="#3fb950" font-weight="400">Verified subset</text>
+<circle cx="29" cy="1393" r="4" fill="#3fb950"/>
+<text x="42" y="1397" font-size="13" fill="#e6edf3" font-weight="400">Vulkan sessions, compiled kernels and resumable lane buffers</text>
+<text x="706" y="1397" font-size="13" fill="#3fb950" font-weight="400">Verified prototype</text>
+<circle cx="29" cy="1419" r="4" fill="#8b949e"/>
+<text x="42" y="1423" font-size="13" fill="#e6edf3" font-weight="400">Guest OS submission, graphics draws, textures and presentation</text>
+<text x="706" y="1423" font-size="13" fill="#8b949e" font-weight="400">Not implemented</text>
+<text x="24" y="1457" font-size="13" fill="#8b949e" font-weight="400">Still missing: FP16 arithmetic, FP64, other conversions, headers, graphics and warp/shared-memory sync.</text>
+<text x="24" y="1493" font-size="13" fill="#d29922" font-weight="400">Synthetic independent-lane checks. Counts are not cumulative, game FPS or overall GPU completion.</text>
 </svg>
