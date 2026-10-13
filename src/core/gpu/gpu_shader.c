@@ -124,6 +124,144 @@ gpu_shader_decode(const void *bytes, size_t size, gpu_shader_instruction_t *inst
 
     const uint32_t operation = opcode & 0x1FFU;
     const uint32_t form      = opcode >> 9U;
+    if (0x107U == operation || 0x104U == operation)
+    {
+        const uint32_t format = third & ~0x0001C000U;
+        if ((1U != form && 4U != form) || (first & 0xFF000000U) != 0
+            || (0x104U == operation && format == 0x00101000U && form != 1U)
+            || (1U == form && (second & ~0xC00000FFU) != 0)
+            || (0x104U == operation ? format != 0x00200800U && format != 0x00101000U
+                                    : format != 0x00201000U))
+        {
+            return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+        }
+        decoded.operation   = 0x107U == operation ? GPU_SHADER_FRND : GPU_SHADER_F2F;
+        decoded.float_widen = 0x104U == operation && format == 0x00101000U;
+        decoded.sources[0]
+            = 1U == form ? register_source(second & 255U, second >> 31U) : immediate_source(second);
+        decoded.sources[0].absolute = 1U == form ? (second >> 30U) & 1U : 0;
+        decoded.source_count        = 1U;
+        decoded.float_ftz           = (third >> 16U) & 1U;
+        decoded.float_rounding      = (gpu_shader_float_rounding_t)((third >> 14U) & 3U);
+        *instruction                = decoded;
+        return POUND_SUCCESS;
+    }
+    if (0x105U == operation || 0x106U == operation || 0x045U == operation)
+    {
+        const uint32_t to_integer = 0x105U == operation;
+        const uint32_t flags      = to_integer ? 0x0001E100U : 0x0000C400U;
+        if ((1U != form && 4U != form) || (first & 0xFF000000U) != 0
+            || (1U == form && (second & ~(to_integer ? 0xC00000FFU : 0x000000FFU)) != 0)
+            || (third & ~flags) != 0x00201000U
+            || (0x045U == operation && (third & 0x0000C000U) != 0
+                && (third & 0x0000C000U) != 0x0000C000U))
+        {
+            return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+        }
+        decoded.operation           = to_integer ? GPU_SHADER_F2I
+                                                 : (0x045U == operation ? GPU_SHADER_I2FP : GPU_SHADER_I2F);
+        decoded.sources[0]          = 1U == form
+                                          ? register_source(second & 255U, to_integer ? second >> 31U : 0)
+                                          : immediate_source(second);
+        decoded.sources[0].absolute = 1U == form && to_integer ? (second >> 30U) & 1U : 0;
+        decoded.source_count        = 1U;
+        decoded.conversion_signed   = (third >> (to_integer ? 8U : 10U)) & 1U;
+        decoded.float_ftz           = to_integer ? (third >> 16U) & 1U : 0;
+        decoded.float_nan_to_zero   = to_integer ? (third >> 13U) & 1U : 0;
+        decoded.float_rounding      = (gpu_shader_float_rounding_t)((third >> 14U) & 3U);
+        *instruction                = decoded;
+        return POUND_SUCCESS;
+    }
+    if (0x023U == operation)
+    {
+        if ((1U != form && 2U != form && 4U != form) || (1U == form && 0 != (second & ~0xC00000FFU))
+            || 0 != (third & ~0x0001EFFFU))
+        {
+            return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+        }
+        decoded.operation              = GPU_SHADER_FFMA;
+        decoded.sources[0]             = register_source(first >> 24U, (third >> 8U) & 1U);
+        decoded.sources[0].absolute    = (third >> 9U) & 1U;
+        const gpu_shader_source_t last = { .kind     = GPU_SHADER_SOURCE_REGISTER,
+                                           .value    = third & 255U,
+                                           .negate   = (third >> 11U) & 1U,
+                                           .absolute = (third >> 10U) & 1U };
+        decoded.sources[1]             = 2U == form
+                                             ? last
+                                             : (1U == form ? register_source(second & 255U, second >> 31U)
+                                                           : immediate_source(second));
+        if (1U == form)
+        {
+            decoded.sources[1].absolute = (second >> 30U) & 1U;
+        }
+        decoded.sources[2]     = 2U == form ? immediate_source(second) : last;
+        decoded.source_count   = 3U;
+        decoded.float_ftz      = (third >> 16U) & 1U;
+        decoded.float_rounding = (gpu_shader_float_rounding_t)((third >> 14U) & 3U);
+        decoded.float_saturate = (third >> 13U) & 1U;
+        *instruction           = decoded;
+        return POUND_SUCCESS;
+    }
+    if (0x020U == operation || 0x021U == operation)
+    {
+        const uint32_t immediate_form = 0x021U == operation ? 2U : 4U;
+        if ((1U != form && immediate_form != form) || (1U == form && 0 != (second & ~0xC00000FFU))
+            || 0 != (third & ~0x0041E300U)
+            || (third & 0x00400000U) != (0x020U == operation ? 0x00400000U : 0))
+        {
+            return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+        }
+        decoded.operation           = 0x020U == operation ? GPU_SHADER_FMUL : GPU_SHADER_FADD;
+        decoded.sources[0]          = register_source(first >> 24U, (third >> 8U) & 1U);
+        decoded.sources[0].absolute = (third >> 9U) & 1U;
+        decoded.sources[1]
+            = 1U == form ? register_source(second & 255U, second >> 31U) : immediate_source(second);
+        decoded.sources[1].absolute = 1U == form ? (second >> 30U) & 1U : 0;
+        decoded.source_count        = 2U;
+        decoded.float_ftz           = (third >> 16U) & 1U;
+        decoded.float_rounding      = (gpu_shader_float_rounding_t)((third >> 14U) & 3U);
+        decoded.float_saturate      = (third >> 13U) & 1U;
+        *instruction                = decoded;
+        return POUND_SUCCESS;
+    }
+    if (0x009U == operation || 0x00BU == operation)
+    {
+        if ((1U != form && 4U != form) || (1U == form && 0 != (second & ~0xC00000FFU))
+            || (0x009U == operation && 0 != (third & ~0x07810300U))
+            || (0x00BU == operation
+                && (0 != (first & 0x00FF0000U) || 0 != (third & ~0x07FFFF00U)
+                    || 3U == ((third >> 10U) & 3U))))
+        {
+            return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+        }
+        decoded.operation           = 0x009U == operation ? GPU_SHADER_FMNMX : GPU_SHADER_FSETP;
+        decoded.sources[0]          = register_source(first >> 24U, (third >> 8U) & 1U);
+        decoded.sources[0].absolute = (third >> 9U) & 1U;
+        decoded.sources[1]
+            = 1U == form ? register_source(second & 255U, second >> 31U) : immediate_source(second);
+        decoded.sources[1].absolute = 1U == form ? (second >> 30U) & 1U : 0;
+        decoded.source_count        = 2U;
+        decoded.float_ftz           = (third >> 16U) & 1U;
+        if (GPU_SHADER_FSETP == decoded.operation)
+        {
+            decoded.destination          = GPU_SHADER_ZERO_REGISTER;
+            decoded.float_comparison     = (gpu_shader_float_comparison_t)((third >> 12U) & 15U);
+            decoded.boolean_operation    = (gpu_shader_boolean_t)((third >> 10U) & 3U);
+            decoded.predicate_sources[0] = decoded.condition;
+            decoded.predicate_source_inverts[0] = decoded.condition_invert;
+            decoded.predicate_source_count      = 1U;
+            decoded.predicate_destination_count = 2U;
+            decoded.predicate_destinations[0]   = (third >> 17U) & 7U;
+            decoded.predicate_destinations[1]   = (third >> 20U) & 7U;
+            if (decoded.predicate_destinations[0] == decoded.predicate_destinations[1]
+                && GPU_SHADER_TRUE_PREDICATE != decoded.predicate_destinations[0])
+            {
+                return POUND_ERROR_GPU_UNSUPPORTED_SHADER;
+            }
+        }
+        *instruction = decoded;
+        return POUND_SUCCESS;
+    }
     if (1U != form && 4U != form
         && !(2U == form
              && (0x24U == operation || 0x19U == operation || 0x16U == operation
@@ -430,6 +568,26 @@ gpu_shader_operation_name(gpu_shader_operation_t operation)
             return "IDP4";
         case GPU_SHADER_IDP2:
             return "IDP2";
+        case GPU_SHADER_FSETP:
+            return "FSETP";
+        case GPU_SHADER_FMNMX:
+            return "FMNMX";
+        case GPU_SHADER_FADD:
+            return "FADD";
+        case GPU_SHADER_FMUL:
+            return "FMUL";
+        case GPU_SHADER_FFMA:
+            return "FFMA";
+        case GPU_SHADER_F2I:
+            return "F2I";
+        case GPU_SHADER_I2F:
+            return "I2F";
+        case GPU_SHADER_FRND:
+            return "FRND";
+        case GPU_SHADER_I2FP:
+            return "I2FP";
+        case GPU_SHADER_F2F:
+            return "F2F";
         default:
             return "UNKNOWN";
     }
@@ -454,24 +612,35 @@ predicate_value(const gpu_shader_lane_t *lane, uint32_t predicate, uint32_t inve
 }
 
 static uint32_t
-source_value(const gpu_shader_lane_t *lane, const gpu_shader_source_t *source, uint32_t bitwise)
+source_value(const gpu_shader_lane_t   *lane,
+             const gpu_shader_source_t *source,
+             uint32_t                   bitwise,
+             uint32_t                   floating)
 {
     const uint32_t value
         = GPU_SHADER_SOURCE_IMMEDIATE == source->kind
               ? source->value
               : (GPU_SHADER_ZERO_REGISTER == source->value ? 0 : lane->registers[source->value]);
+    if (floating != 0)
+    {
+        const uint32_t absolute = source->absolute != 0 ? value & 0x7FFFFFFFU : value;
+        return source->negate != 0 ? absolute ^ 0x80000000U : absolute;
+    }
     return 0 == source->negate ? value : (0 != bitwise ? ~value : 0U - value);
 }
 
 static uint32_t
-compare_integer(uint32_t first, uint32_t second, const gpu_shader_instruction_t *instruction)
+compare_integer(uint32_t                first,
+                uint32_t                second,
+                gpu_shader_comparison_t comparison,
+                uint32_t                signed_value)
 {
-    if (0 != instruction->compare_signed)
+    if (0 != signed_value)
     {
         first ^= 0x80000000U;
         second ^= 0x80000000U;
     }
-    switch (instruction->comparison)
+    switch (comparison)
     {
         case GPU_SHADER_COMPARE_FALSE:
             return 0;
@@ -492,6 +661,521 @@ compare_integer(uint32_t first, uint32_t second, const gpu_shader_instruction_t 
         default:
             return 0;
     }
+}
+
+static uint32_t
+float_flush(uint32_t value, uint32_t ftz)
+{
+    return ftz != 0 && (value & 0x7F800000U) == 0 ? value & 0x80000000U : value;
+}
+
+static uint32_t
+float_key(uint32_t value)
+{
+    return (value & 0x80000000U) != 0 ? ~value : value ^ 0x80000000U;
+}
+
+static uint32_t
+float_nan(uint32_t value)
+{
+    return (value & 0x7FFFFFFFU) > 0x7F800000U;
+}
+
+static uint32_t
+compare_float(uint32_t first, uint32_t second, gpu_shader_float_comparison_t operation)
+{
+    const uint32_t nan      = float_nan(first) | float_nan(second);
+    const uint32_t left     = (first & 0x7FFFFFFFU) == 0 ? 0 : first;
+    const uint32_t right    = (second & 0x7FFFFFFFU) == 0 ? 0 : second;
+    const uint32_t relation = compare_integer(
+        float_key(left), float_key(right), (gpu_shader_comparison_t)(operation & 7U), 0);
+    return (operation & 8U) != 0 ? relation | nan : relation & (nan ^ 1U);
+}
+
+static uint32_t
+float_minmax(uint32_t first, uint32_t second, uint32_t minimum)
+{
+    const uint32_t left_nan  = float_nan(first);
+    const uint32_t right_nan = float_nan(second);
+    if (left_nan != 0 || right_nan != 0)
+    {
+        return left_nan != 0 ? (right_nan != 0 ? 0x7FFFFFFFU : second) : first;
+    }
+    return (float_key(first) < float_key(second)) == minimum ? first : second;
+}
+
+static uint32_t
+float_shift_jam(uint32_t value, uint32_t distance)
+{
+    return distance == 0
+               ? value
+               : (distance >= 32U ? value != 0
+                                  : (value >> distance) | ((value & ((1U << distance) - 1U)) != 0));
+}
+
+static uint32_t
+float_round(uint32_t                    significand,
+            int32_t                     exponent,
+            uint32_t                    sign,
+            gpu_shader_float_rounding_t rounding,
+            uint32_t                    ftz)
+{
+    if (exponent < 1)
+    {
+        significand = float_shift_jam(significand, (uint32_t)(1 - exponent));
+        exponent    = 1;
+    }
+    if (ftz && exponent == 1)
+    {
+        const uint32_t round_outward = (rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+                                       || (rounding == GPU_SHADER_ROUND_UP && sign == 0);
+        const uint32_t normal
+            = rounding == GPU_SHADER_ROUND_NEAREST
+                  ? significand >= 0x03FFFFFEU
+                  : (round_outward ? significand > 0x03FFFFFCU : significand >= 0x04000000U);
+        if (!normal)
+        {
+            return sign;
+        }
+    }
+    const uint32_t discarded = significand & 7U;
+    uint32_t       mantissa  = significand >> 3U;
+    const uint32_t increment = rounding == GPU_SHADER_ROUND_NEAREST
+                                   ? discarded > 4U || (discarded == 4U && (mantissa & 1U) != 0)
+                                   : discarded != 0
+                                         && ((rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+                                             || (rounding == GPU_SHADER_ROUND_UP && sign == 0));
+    mantissa += increment;
+    if (mantissa >= 0x01000000U)
+    {
+        mantissa >>= 1U;
+        ++exponent;
+    }
+    if (exponent >= 255)
+    {
+        const uint32_t infinity = rounding == GPU_SHADER_ROUND_NEAREST
+                                  || (rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+                                  || (rounding == GPU_SHADER_ROUND_UP && sign == 0);
+        return sign | (infinity ? 0x7F800000U : 0x7F7FFFFFU);
+    }
+    return sign | (mantissa >= 0x00800000U ? (uint32_t)exponent << 23U : 0)
+           | (mantissa & 0x007FFFFFU);
+}
+
+static uint32_t
+half_to_float(uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    uint32_t sign = (value & 0x8000U) << 16U;
+    if (instruction->sources[0].absolute)
+    {
+        sign = 0;
+    }
+    if (instruction->sources[0].negate)
+    {
+        sign ^= 0x80000000U;
+    }
+    uint32_t exponent = (value >> 10U) & 31U;
+    uint32_t fraction = value & 0x3FFU;
+    if (exponent == 31U)
+    {
+        return fraction ? 0x7FFFFFFFU : sign | 0x7F800000U;
+    }
+    if (exponent == 0)
+    {
+        if (fraction == 0 || instruction->float_ftz)
+        {
+            return sign;
+        }
+        exponent = 113U;
+        while (fraction < 0x400U)
+        {
+            fraction <<= 1U;
+            --exponent;
+        }
+    }
+    else
+    {
+        exponent += 112U;
+    }
+    return sign | (exponent << 23U) | ((fraction & 0x3FFU) << 13U);
+}
+
+static uint32_t
+float_to_half(uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    value                    = float_flush(value, instruction->float_ftz);
+    const uint32_t sign      = (value >> 16U) & 0x8000U;
+    const uint32_t magnitude = value & 0x7FFFFFFFU;
+    if (magnitude >= 0x7F800000U)
+    {
+        return magnitude > 0x7F800000U ? 0x7FFFU : sign | 0x7C00U;
+    }
+    const uint32_t source_exponent = (value >> 23U) & 255U;
+    int32_t        exponent        = (int32_t)(source_exponent ? source_exponent : 1U) - 112;
+    const uint32_t significand     = (value & 0x007FFFFFU) | (source_exponent ? 0x00800000U : 0);
+    const uint32_t distance        = exponent < 1 ? (uint32_t)(14 - exponent) : 13U;
+    const uint32_t discarded
+        = distance >= 32U ? significand : significand & ((1U << distance) - 1U);
+    uint32_t       mantissa = distance >= 32U ? 0 : significand >> distance;
+    const uint32_t half     = distance >= 32U ? UINT32_MAX : 1U << (distance - 1U);
+    const uint32_t increment
+        = instruction->float_rounding == GPU_SHADER_ROUND_NEAREST
+              ? discarded > half || (discarded == half && (mantissa & 1U) != 0)
+              : discarded != 0
+                    && ((instruction->float_rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+                        || (instruction->float_rounding == GPU_SHADER_ROUND_UP && sign == 0));
+    mantissa += increment;
+    exponent = exponent < 1 ? 1 : exponent;
+    if (mantissa >= 0x800U)
+    {
+        mantissa >>= 1U;
+        ++exponent;
+    }
+    if (exponent >= 31)
+    {
+        const uint32_t infinity
+            = instruction->float_rounding == GPU_SHADER_ROUND_NEAREST
+              || (instruction->float_rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+              || (instruction->float_rounding == GPU_SHADER_ROUND_UP && sign == 0);
+        return sign | (infinity ? 0x7C00U : 0x7BFFU);
+    }
+    if (instruction->float_ftz && mantissa < 0x400U)
+    {
+        return sign;
+    }
+    return sign | (mantissa >= 0x400U ? (uint32_t)exponent << 10U : 0) | (mantissa & 0x3FFU);
+}
+
+static uint32_t
+float_round_integer(uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    value = float_flush(value, instruction->float_ftz);
+    if (float_nan(value))
+    {
+        return 0x7FFFFFFFU;
+    }
+    const uint32_t sign      = value & 0x80000000U;
+    const uint32_t magnitude = value & 0x7FFFFFFFU;
+    const uint32_t exponent  = (value >> 23U) & 255U;
+    const uint32_t outward   = (instruction->float_rounding == GPU_SHADER_ROUND_DOWN && sign != 0)
+                             || (instruction->float_rounding == GPU_SHADER_ROUND_UP && sign == 0);
+    if (exponent >= 150U)
+    {
+        return value;
+    }
+    if (exponent < 127U)
+    {
+        const uint32_t increment = instruction->float_rounding == GPU_SHADER_ROUND_NEAREST
+                                       ? magnitude > 0x3F000000U
+                                       : outward && magnitude != 0;
+        return sign | (increment ? 0x3F800000U : 0);
+    }
+    const uint32_t distance  = 150U - exponent;
+    const uint32_t unit      = 1U << distance;
+    const uint32_t discarded = value & (unit - 1U);
+    const uint32_t integral  = value & ~(unit - 1U);
+    const uint32_t half      = unit >> 1U;
+    const uint32_t increment
+        = instruction->float_rounding == GPU_SHADER_ROUND_NEAREST
+              ? discarded > half || (discarded == half && (integral & unit) != 0)
+              : outward && discarded != 0;
+    return integral + (increment ? unit : 0);
+}
+
+static uint32_t
+float_to_integer(uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    value = float_flush(value, instruction->float_ftz);
+    if (float_nan(value))
+    {
+        return instruction->float_nan_to_zero ? 0 : 0x80000000U;
+    }
+    const uint32_t negative = value >> 31U;
+    const uint32_t exponent = (value >> 23U) & 255U;
+    const uint32_t limit = instruction->conversion_signed ? (negative ? 0x80000000U : 0x7FFFFFFFU)
+                                                          : (negative ? 0 : UINT32_MAX);
+    if (exponent >= 159U)
+    {
+        return limit;
+    }
+    const uint32_t significand = (value & 0x007FFFFFU) | (exponent ? 0x00800000U : 0);
+    uint32_t       magnitude;
+    if (exponent >= 150U)
+    {
+        magnitude = significand << (exponent - 150U);
+    }
+    else
+    {
+        const uint32_t distance = 150U - exponent;
+        const uint32_t discarded
+            = distance >= 32U ? significand : significand & ((1U << distance) - 1U);
+        magnitude           = distance >= 32U ? 0 : significand >> distance;
+        const uint32_t half = distance >= 32U ? UINT32_MAX : 1U << (distance - 1U);
+        const uint32_t increment
+            = instruction->float_rounding == GPU_SHADER_ROUND_NEAREST
+                  ? discarded > half || (discarded == half && (magnitude & 1U))
+                  : discarded != 0
+                        && ((instruction->float_rounding == GPU_SHADER_ROUND_DOWN && negative)
+                            || (instruction->float_rounding == GPU_SHADER_ROUND_UP && !negative));
+        magnitude += increment;
+    }
+    if (instruction->conversion_signed || negative)
+    {
+        if (magnitude > limit)
+        {
+            magnitude = limit;
+        }
+    }
+    return negative ? 0U - magnitude : magnitude;
+}
+
+static uint32_t
+integer_to_float(uint32_t value, const gpu_shader_instruction_t *instruction)
+{
+    const uint32_t sign      = instruction->conversion_signed ? value & 0x80000000U : 0;
+    uint32_t       magnitude = sign ? 0U - value : value;
+    if (!magnitude)
+    {
+        return 0;
+    }
+    uint32_t leading = 0;
+    for (uint32_t remaining = magnitude; remaining > 1U; remaining >>= 1U)
+    {
+        ++leading;
+    }
+    magnitude
+        = leading > 26U ? float_shift_jam(magnitude, leading - 26U) : magnitude << (26U - leading);
+    return float_round(magnitude, (int32_t)(127U + leading), sign, instruction->float_rounding, 0);
+}
+
+static uint32_t
+float_add(uint32_t first, uint32_t second, gpu_shader_float_rounding_t rounding, uint32_t ftz)
+{
+    if (float_nan(first) || float_nan(second))
+    {
+        return 0x7FFFFFFFU;
+    }
+    if ((first & 0x7FFFFFFFU) < (second & 0x7FFFFFFFU))
+    {
+        const uint32_t temporary = first;
+        first                    = second;
+        second                   = temporary;
+    }
+    const uint32_t sign             = first & 0x80000000U;
+    const uint32_t matching_signs   = ((first ^ second) & 0x80000000U) == 0;
+    int32_t        exponent         = (int32_t)((first >> 23U) & 255U);
+    int32_t        smaller_exponent = (int32_t)((second >> 23U) & 255U);
+    if (exponent == 255)
+    {
+        return smaller_exponent == 255 && !matching_signs ? 0x7FFFFFFFU : first;
+    }
+    uint32_t larger  = ((first & 0x007FFFFFU) | (exponent != 0 ? 0x00800000U : 0)) << 3U;
+    uint32_t smaller = ((second & 0x007FFFFFU) | (smaller_exponent != 0 ? 0x00800000U : 0)) << 3U;
+    exponent         = exponent == 0 ? 1 : exponent;
+    smaller_exponent = smaller_exponent == 0 ? 1 : smaller_exponent;
+    smaller          = float_shift_jam(smaller, (uint32_t)(exponent - smaller_exponent));
+    uint32_t significand = matching_signs ? larger + smaller : larger - smaller;
+    if (significand == 0)
+    {
+        return matching_signs ? sign : (rounding == GPU_SHADER_ROUND_DOWN ? 0x80000000U : 0);
+    }
+    if (significand >= 0x08000000U)
+    {
+        significand = float_shift_jam(significand, 1U);
+        ++exponent;
+    }
+    while (significand < 0x04000000U && exponent > 1)
+    {
+        significand <<= 1U;
+        --exponent;
+    }
+    return float_round(significand, exponent, sign, rounding, ftz);
+}
+
+static uint32_t
+float_multiply(uint32_t first, uint32_t second, gpu_shader_float_rounding_t rounding, uint32_t ftz)
+{
+    const uint32_t sign  = (first ^ second) & 0x80000000U;
+    const uint32_t left  = first & 0x7FFFFFFFU;
+    const uint32_t right = second & 0x7FFFFFFFU;
+    if (float_nan(first) || float_nan(second) || (left == 0x7F800000U && right == 0)
+        || (right == 0x7F800000U && left == 0))
+    {
+        return 0x7FFFFFFFU;
+    }
+    if (left == 0x7F800000U || right == 0x7F800000U)
+    {
+        return sign | 0x7F800000U;
+    }
+    if (left == 0 || right == 0)
+    {
+        return sign;
+    }
+    int32_t  left_exponent  = (int32_t)(left >> 23U);
+    int32_t  right_exponent = (int32_t)(right >> 23U);
+    uint32_t left_mantissa  = (left & 0x007FFFFFU) | (left_exponent != 0 ? 0x00800000U : 0);
+    uint32_t right_mantissa = (right & 0x007FFFFFU) | (right_exponent != 0 ? 0x00800000U : 0);
+    left_exponent           = left_exponent == 0 ? 1 : left_exponent;
+    right_exponent          = right_exponent == 0 ? 1 : right_exponent;
+    while (left_mantissa < 0x00800000U)
+    {
+        left_mantissa <<= 1U;
+        --left_exponent;
+    }
+    while (right_mantissa < 0x00800000U)
+    {
+        right_mantissa <<= 1U;
+        --right_exponent;
+    }
+    const uint64_t product  = (uint64_t)left_mantissa * right_mantissa;
+    const uint32_t high     = (uint32_t)(product >> 47U);
+    const uint32_t distance = 20U + high;
+    const uint32_t significand
+        = (uint32_t)(product >> distance) | ((product & ((UINT64_C(1) << distance) - 1U)) != 0);
+    return float_round(
+        significand, left_exponent + right_exponent - 127 + (int32_t)high, sign, rounding, ftz);
+}
+
+static uint32_t
+float_arithmetic(uint32_t first, uint32_t second, const gpu_shader_instruction_t *instruction)
+{
+    first  = float_flush(first, instruction->float_ftz);
+    second = float_flush(second, instruction->float_ftz);
+    uint32_t value
+        = instruction->operation == GPU_SHADER_FADD
+              ? float_add(first, second, instruction->float_rounding, instruction->float_ftz)
+              : float_multiply(first, second, instruction->float_rounding, instruction->float_ftz);
+    value = float_flush(value, instruction->float_ftz);
+    if (instruction->float_saturate)
+    {
+        value = (value & 0x80000000U) != 0 || float_nan(value)
+                    ? 0
+                    : (value > 0x3F800000U ? 0x3F800000U : value);
+    }
+    return value;
+}
+
+static uint32_t
+float_normalized_mantissa(uint32_t value, int32_t *exponent)
+{
+    *exponent         = (int32_t)((value >> 23U) & 255U);
+    uint32_t mantissa = (value & 0x007FFFFFU) | (*exponent != 0 ? 0x00800000U : 0);
+    *exponent         = *exponent == 0 ? 1 : *exponent;
+    while (mantissa != 0 && mantissa < 0x00800000U)
+    {
+        mantissa <<= 1U;
+        --*exponent;
+    }
+    return mantissa;
+}
+
+static uint64_t
+float_wide_shift_jam(uint64_t value, uint32_t distance)
+{
+    return distance == 0
+               ? value
+               : (distance >= 64U
+                      ? value != 0
+                      : (value >> distance) | ((value & ((UINT64_C(1) << distance) - 1U)) != 0));
+}
+
+static uint32_t
+float_fused(uint32_t                        first,
+            uint32_t                        second,
+            uint32_t                        third,
+            const gpu_shader_instruction_t *instruction)
+{
+    first                      = float_flush(first, instruction->float_ftz);
+    second                     = float_flush(second, instruction->float_ftz);
+    third                      = float_flush(third, instruction->float_ftz);
+    const uint32_t left        = first & 0x7FFFFFFFU;
+    const uint32_t right       = second & 0x7FFFFFFFU;
+    const uint32_t addend      = third & 0x7FFFFFFFU;
+    uint32_t       sign        = (first ^ second) & 0x80000000U;
+    const uint32_t addend_sign = third & 0x80000000U;
+    uint32_t       value;
+    if (float_nan(first) || float_nan(second) || float_nan(third)
+        || (left == 0x7F800000U && right == 0) || (right == 0x7F800000U && left == 0))
+    {
+        value = 0x7FFFFFFFU;
+    }
+    else if (left == 0x7F800000U || right == 0x7F800000U)
+    {
+        value = addend == 0x7F800000U && sign != addend_sign ? 0x7FFFFFFFU : sign | 0x7F800000U;
+    }
+    else if (addend == 0x7F800000U)
+    {
+        value = third;
+    }
+    else if ((left == 0 || right == 0) && addend == 0)
+    {
+        value = sign == addend_sign
+                    ? sign
+                    : (instruction->float_rounding == GPU_SHADER_ROUND_DOWN ? 0x80000000U : 0);
+    }
+    else if (left == 0 || right == 0)
+    {
+        value = third;
+    }
+    else if (addend == 0)
+    {
+        value = float_multiply(first, second, instruction->float_rounding, instruction->float_ftz);
+    }
+    else
+    {
+        int32_t        left_exponent, right_exponent, addend_exponent;
+        const uint32_t left_mantissa   = float_normalized_mantissa(first, &left_exponent);
+        const uint32_t right_mantissa  = float_normalized_mantissa(second, &right_exponent);
+        const uint32_t addend_mantissa = float_normalized_mantissa(third, &addend_exponent);
+        const uint64_t product         = (uint64_t)left_mantissa * right_mantissa;
+        const uint32_t high            = (uint32_t)(product >> 47U);
+        int32_t        exponent        = left_exponent + right_exponent - 127 + (int32_t)high;
+        uint64_t       larger          = product << (16U - high);
+        uint64_t       smaller         = (uint64_t)addend_mantissa << 39U;
+        const uint32_t matching_signs  = sign == addend_sign;
+        if (exponent < addend_exponent || (exponent == addend_exponent && larger < smaller))
+        {
+            const uint64_t temporary         = larger;
+            larger                           = smaller;
+            smaller                          = temporary;
+            const int32_t temporary_exponent = exponent;
+            exponent                         = addend_exponent;
+            addend_exponent                  = temporary_exponent;
+            sign                             = addend_sign;
+        }
+        smaller = float_wide_shift_jam(smaller, (uint32_t)(exponent - addend_exponent));
+        uint64_t significand = matching_signs ? larger + smaller : larger - smaller;
+        if (significand == 0)
+        {
+            value = instruction->float_rounding == GPU_SHADER_ROUND_DOWN ? 0x80000000U : 0;
+        }
+        else
+        {
+            if ((significand & (UINT64_C(1) << 63U)) != 0)
+            {
+                significand = float_wide_shift_jam(significand, 1U);
+                ++exponent;
+            }
+            while ((significand & (UINT64_C(1) << 62U)) == 0)
+            {
+                significand <<= 1U;
+                --exponent;
+            }
+            value = float_round((uint32_t)float_wide_shift_jam(significand, 36U),
+                                exponent,
+                                sign,
+                                instruction->float_rounding,
+                                instruction->float_ftz);
+        }
+    }
+    value = float_flush(value, instruction->float_ftz);
+    if (instruction->float_saturate)
+    {
+        value = (value & 0x80000000U) != 0 || float_nan(value)
+                    ? 0
+                    : (value > 0x3F800000U ? 0x3F800000U : value);
+    }
+    return value;
 }
 
 static uint32_t
@@ -715,9 +1399,20 @@ execute_program(gpu_shader_lane_t       *lane,
                                         || ((GPU_SHADER_IADD3 == instruction->operation
                                              || GPU_SHADER_LEA == instruction->operation)
                                             && 0 != instruction->carry_in);
-            const uint32_t first  = source_value(lane, &instruction->sources[0], complement);
-            const uint32_t second = source_value(lane, &instruction->sources[1], complement);
-            const uint32_t third  = source_value(lane, &instruction->sources[2], complement);
+            const uint32_t floating = instruction->operation == GPU_SHADER_FSETP
+                                      || instruction->operation == GPU_SHADER_FMNMX
+                                      || instruction->operation == GPU_SHADER_FADD
+                                      || instruction->operation == GPU_SHADER_FMUL
+                                      || instruction->operation == GPU_SHADER_FFMA
+                                      || instruction->operation == GPU_SHADER_F2I
+                                      || instruction->operation == GPU_SHADER_FRND
+                                      || instruction->operation == GPU_SHADER_F2F;
+            const uint32_t first
+                = source_value(lane, &instruction->sources[0], complement, floating);
+            const uint32_t second
+                = source_value(lane, &instruction->sources[1], complement, floating);
+            const uint32_t third
+                = source_value(lane, &instruction->sources[2], complement, floating);
             switch (instruction->operation)
             {
                 case GPU_SHADER_MOV:
@@ -858,6 +1553,51 @@ execute_program(gpu_shader_lane_t       *lane,
                     value = less == minimum ? first : second;
                     break;
                 }
+                case GPU_SHADER_FRND:
+                    value = float_round_integer(first, instruction);
+                    break;
+                case GPU_SHADER_F2F: {
+                    gpu_shader_source_t operand = instruction->sources[0];
+                    operand.negate              = 0;
+                    value                       = instruction->float_widen
+                                                      ? half_to_float(source_value(lane, &operand, 0, 0), instruction)
+                                                      : float_to_half(first, instruction);
+                    break;
+                }
+                case GPU_SHADER_F2I:
+                    value = float_to_integer(first, instruction);
+                    break;
+                case GPU_SHADER_I2F:
+                case GPU_SHADER_I2FP:
+                    value = integer_to_float(first, instruction);
+                    break;
+                case GPU_SHADER_FMNMX:
+                    value = float_minmax(float_flush(first, instruction->float_ftz),
+                                         float_flush(second, instruction->float_ftz),
+                                         predicate_value(lane,
+                                                         instruction->condition,
+                                                         instruction->condition_invert));
+                    break;
+                case GPU_SHADER_FADD:
+                case GPU_SHADER_FMUL:
+                    value = float_arithmetic(first, second, instruction);
+                    break;
+                case GPU_SHADER_FFMA:
+                    value = float_fused(first, second, third, instruction);
+                    break;
+                case GPU_SHADER_FSETP: {
+                    const uint32_t comparison
+                        = compare_float(float_flush(first, instruction->float_ftz),
+                                        float_flush(second, instruction->float_ftz),
+                                        instruction->float_comparison);
+                    const uint32_t condition = predicate_value(
+                        lane, instruction->condition, instruction->condition_invert);
+                    predicate_results[0]
+                        = combine_predicates(comparison, condition, instruction->boolean_operation);
+                    predicate_results[1] = combine_predicates(
+                        comparison ^ 1U, condition, instruction->boolean_operation);
+                    break;
+                }
                 case GPU_SHADER_SEL:
                     value = 0
                                     != predicate_value(
@@ -866,7 +1606,8 @@ execute_program(gpu_shader_lane_t       *lane,
                                 : second;
                     break;
                 case GPU_SHADER_ISETP: {
-                    uint32_t comparison = compare_integer(first, second, instruction);
+                    uint32_t comparison = compare_integer(
+                        first, second, instruction->comparison, instruction->compare_signed);
                     if (0 != instruction->compare_extended && first == second
                         && GPU_SHADER_COMPARE_FALSE != instruction->comparison
                         && GPU_SHADER_COMPARE_TRUE != instruction->comparison)

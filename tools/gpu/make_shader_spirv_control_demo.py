@@ -36,6 +36,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shader-tool", required=True, type=Path)
     parser.add_argument("--spirv-val", type=Path)
+    parser.add_argument("--compute-tool", type=Path, help="optionally dispatch with PoundGpuCompute")
+    parser.add_argument("--compute-device", default="auto", help="auto or Vulkan physical-device index")
     parser.add_argument("--output-dir", default=Path("build/gpu-shader-spirv-control-demo"), type=Path)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,8 +97,25 @@ def main():
                 raise RuntimeError(f"Reference state differs: {name}: {state}")
         write_lanes(args.output_dir / f"{name}-input.bin", initial)
         write_lanes(args.output_dir / f"{name}-expected.bin", expected)
+        dispatch_report = None
+        if args.compute_tool:
+            input_path = args.output_dir / f"{name}-input.bin"
+            if name == "counted-resumed":
+                partial = args.output_dir / "counted-partial-actual.bin"
+                if partial.read_bytes() != input_path.read_bytes():
+                    raise RuntimeError("Partial output does not match the resumption input")
+                input_path = partial
+            actual = args.output_dir / f"{name}-actual.bin"
+            dispatch = subprocess.run(
+                [str(args.compute_tool.resolve()), "bounded", str(raw), str(input_path), str(actual),
+                 str(budget), args.compute_device], capture_output=True, text=True, check=True, timeout=60)
+            if actual.read_bytes() != (args.output_dir / f"{name}-expected.bin").read_bytes():
+                raise RuntimeError(f"Vulkan control fixture mismatch: {name}")
+            dispatch_report = dispatch.stdout.strip()
         reports.append({"case": name, "budget": budget, "lanes": len(initial),
-                        "khronos_validation_checked": validated, "vulkan_dispatch_checked": False})
+                        "khronos_validation_checked": validated,
+                        "vulkan_dispatch_checked": dispatch_report is not None,
+                        "vulkan_dispatch_report": dispatch_report})
     output = args.output_dir / "rejected-output.spv"
     sentinel = b"preserve output"
     raw = args.output_dir / "self-loop.bin"
@@ -116,13 +135,39 @@ def main():
                                 capture_output=True, timeout=30)
         if result.returncode == 0 or output.read_bytes() != sentinel:
             raise RuntimeError(f"Rejected program changed output: {name}")
+    chains = []
+    if args.compute_tool:
+        chain_cases = [
+            ("counted-chain", "counted-partial", 3, 40, 38, [lane({1: 37}, pc=64, steps=112, halted=1)]),
+            ("self-loop-chain", "self-loop", 3, 4, 4, [lane(steps=12, status=10)]),
+            ("overflow-chain", "step-overflow", 3, 40, 1, [lane(steps=maximum_steps, status=10)]),
+        ]
+        for name, source, budget, dispatch_limit, dispatch_count, expected in chain_cases:
+            actual = args.output_dir / f"{name}-actual.bin"
+            wanted = args.output_dir / f"{name}-expected.bin"
+            write_lanes(wanted, expected)
+            dispatch = subprocess.run(
+                [str(args.compute_tool.resolve()), "bounded-chain",
+                 str(args.output_dir / f"{source}.bin"), str(args.output_dir / f"{source}-input.bin"),
+                 str(actual), str(budget), str(dispatch_limit), args.compute_device],
+                capture_output=True, text=True, check=True, timeout=60)
+            if actual.read_bytes() != wanted.read_bytes():
+                raise RuntimeError(f"Persistent Vulkan chain mismatch: {name}")
+            if f"for {dispatch_count} dispatches" not in dispatch.stdout:
+                raise RuntimeError(f"Unexpected persistent dispatch count: {name}")
+            chains.append({"case": name, "dispatches": dispatch_count,
+                           "vulkan_dispatch_checked": True, "vulkan_dispatch_report": dispatch.stdout.strip()})
     report = {"kind": "bounded independent-lane SPIR-V fixtures, not rendering or SIMT reconvergence",
               "lane_words": 261, "state_words": {"predicates": 255, "pc": 256, "steps_low": 257,
                                                   "steps_high": 258, "halted": 259, "status": 260},
-              "cases": reports}
+              "cases": reports, "persistent_chains": chains}
     (args.output_dir / "control-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("Emitted 13 bounded control-flow fixtures: branches, loops, resumption, exits and fault states.")
-    print("No Vulkan dispatch performed. Validate modules before use with a 261-word-lane compute harness.")
+    if args.compute_tool:
+        print("All independent control fixtures passed Vulkan dispatch, including chained resumption.")
+        print(f"Persistent session/kernel checks passed: {len(chains)} bounded chains.")
+    else:
+        print("No Vulkan dispatch performed. Use --compute-tool to check emitted fixtures on a device.")
 
 
 if __name__ == "__main__":

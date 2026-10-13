@@ -17,6 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shader-tool", required=True, type=Path)
     parser.add_argument("--spirv-val", type=Path)
+    parser.add_argument("--compute-tool", type=Path, help="optionally dispatch with PoundGpuCompute")
+    parser.add_argument("--compute-device", default="auto", help="auto or Vulkan physical-device index")
     parser.add_argument("--output-dir", default=Path("build/gpu-shader-spirv-demo"), type=Path)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -120,15 +122,31 @@ def main():
         records[int(name[1:])] = value
     records[255] = result["predicates"]
     (args.output_dir / "lane-expected.bin").write_bytes(struct.pack("<256I", *records))
+    dispatch_report = None
+    if args.compute_tool:
+        actual = args.output_dir / "lane-actual.bin"
+        dispatch = subprocess.run(
+            [str(args.compute_tool.resolve()), "straight", str(raw),
+             str(args.output_dir / "lane-input.bin"), str(actual), args.compute_device],
+            capture_output=True, text=True, check=True, timeout=60)
+        if actual.read_bytes() != (args.output_dir / "lane-expected.bin").read_bytes():
+            raise RuntimeError("Vulkan lane result differs from independent expected state")
+        dispatch_report = dispatch.stdout.strip()
     report = {"kind": "experimental straight-line integer compute SPIR-V, not game rendering",
               "spirv_version": "1.3", "word_count": len(data) // 4,
               "khronos_validation_checked": validated, "descriptor_set": 0, "binding": 0,
               "lane_words": 256, "workgroup_size": [1, 1, 1], "reference_result": result,
               "instruction_families": families,
+              "vulkan_dispatch_checked": dispatch_report is not None,
+              "vulkan_dispatch_report": dispatch_report,
               "rejection_checks": [name for name, _ in rejected]}
     (args.output_dir / "spirv-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("Emitted a 21-family integer compute SPIR-V module and independent lane input/expected fixtures.")
-    print(f"Khronos validation checked: {validated}. Actual dispatch needs a Vulkan compute harness.")
+    print(f"Khronos validation checked: {validated}. Vulkan dispatch checked: {dispatch_report is not None}.")
+    if dispatch_report:
+        print(dispatch_report)
+    else:
+        print("No Vulkan dispatch performed. Use --compute-tool to check emitted fixtures on a device.")
 
 
 if __name__ == "__main__":

@@ -6,9 +6,10 @@ inline uploads and a software implementation
 of the Ampere DMA copy engine. Commands
 can read and write mapped GPU memory. Production rendering is still
 unimplemented; no guest OS GPU submission service is connected yet. A separate
-experimental SM86 integer shader decoder and single-lane reference executor are
-available for developing the shader frontend, with an experimental straight-line
-integer SPIR-V emitter with straight-line and budget-limited control-flow modes.
+experimental SM86 shader decoder and single-lane reference executor are
+available for integer operations, FP32 comparisons/min-max, addition/multiplication/fused multiply-add
+and FP32/32-bit integer conversions, integral rounding and scalar FP32-to-FP16 conversion. The SPIR-V
+emitter provides straight-line and budget-limited control-flow modes.
 
 ## Supported command formats
 
@@ -446,6 +447,16 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | ISETP | Signed/unsigned comparisons, .EX low-comparison chaining for multiword integers, AND/OR/XOR predicate combination, two outputs |
 | PLOP3.LUT | Three optionally inverted predicates, two independent 8-bit truth tables and predicate outputs |
 | IMNMX | Signed/unsigned 32-bit min/max selected by a predicate, GPR/immediate middle operand |
+| FSETP | FP32 ordered/unordered comparisons, NUM/NAN and F/T, AND/OR/XOR, dual predicates, register/immediate sources, FTZ and abs/neg |
+| FMNMX | FP32 numeric min/max selected by a predicate, register/immediate sources, FTZ and abs/neg |
+| FADD | FP32 addition with all four rounding modes, register/immediate sources, FTZ, saturation and abs/neg |
+| FMUL | FP32 multiplication with all four rounding modes, register/immediate sources, FTZ, saturation and abs/neg; default scale, no DNZ |
+| FFMA | Single-rounding FP32 fused multiply-add, three register inputs or one immediate multiplicand/addend, all rounding modes, FTZ, saturation and abs/neg; no DNZ |
+| F2I | FP32 to signed/unsigned 32-bit integer, four rounding modes, register/immediate sources, FTZ, abs/neg and NTZ |
+| I2F | Signed/unsigned 32-bit integer to FP32, four rounding modes and register/immediate sources |
+| FRND | FP32 integral rounding (nearest-even, floor, ceil, truncation), register/immediate sources, FTZ and abs/neg |
+| I2FP | Signed/unsigned 32-bit integer to FP32 using the separate RN/RZ conversion encoding; register/immediate sources |
+| F2F | Scalar FP32-to-FP16 conversion with four rounding modes and register/immediate sources; FP16-to-FP32 widening from low-half register sources; FTZ and abs/neg supported |
 | BREV | Full 32-bit reversal, GPR/immediate |
 | IABS | Modular signed absolute value, GPR/immediate |
 | SHF | Signed/unsigned 32/64-bit funnel-shift width, wrap/clamp, left/right, low/high result, register or immediate shift/high operand |
@@ -458,7 +469,7 @@ explicitly a checked SM86 subset; it must not be used to guess another ISA.
 | EXIT | Plain exit with instruction predication |
 
 Constant/uniform registers, constant buffers, alternate quad masks,
-floating point, memory/texture operations and unchecked arithmetic variants
+remaining FP arithmetic/conversion widths, FP16 arithmetic, FP64, memory/texture operations and unchecked arithmetic variants
 fail explicitly. Unknown semantic fields are not silently discarded. The
 third-immediate IADD3 form is rejected: NVIDIA's SM86 disassembler does not
 recognize it, even though generic operand helpers can represent similar forms
@@ -814,8 +825,8 @@ translation step, separate from the command engines and production rendering.
 The core emits words without depending on a Vulkan loader or allocating memory.
 
 The accepted straight-line subset is MOV, IADD3, IMAD, LOP3, POPC, SEL, ISETP,
-PLOP3, IMNMX, BREV, IABS, SHF, FLO, PRMT, SGXT, BMSK, LEA, IDP4, IDP2, NOP
-and EXIT: 21 instruction families. This covers all variants currently accepted
+PLOP3, IMNMX, BREV, IABS, SHF, FLO, PRMT, SGXT, BMSK, LEA, IDP4, IDP2, FSETP,
+FMNMX, FADD, FMUL, FFMA, F2I, I2F, FRND, I2FP, F2F, NOP and EXIT: 31 instruction families. This covers all variants currently accepted
 by the experimental decoder for those families, not every hardware encoding.
 Register/immediate operands, RZ/PT, execution predication,
 source/destination aliasing and dual predicate outputs retain the reference
@@ -842,7 +853,7 @@ Programs must end with a single unpredicated EXIT and contain at most 1,024
 instructions including that EXIT. Branches, early/predicated exits and missing
 exits are rejected even if predication would skip them. Unsupported encodings
 are still rejected by the frontend. There is no branch lowering,
-warp synchronization, guest memory access, floating point, texture access,
+warp synchronization, guest memory access, remaining FP arithmetic/conversion widths, texture access,
 shader-header parsing, graphics-stage input/output or rendering integration.
 
 Pass `words = NULL, capacity = 0` to query the required word count, then pass
@@ -878,15 +889,17 @@ spirv-val --target-env vulkan1.1 output.spv
 python tools/gpu/make_shader_spirv_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe --spirv-val /path/to/spirv-val
 ```
 
-The synthetic demo emits all 21 families, checks an independently specified
+The integer demo emits its original 21 families, checks an independently specified
 reference result and produces `integer-compute.bin`, `integer-compute.spv`,
 `lane-input.bin`, `lane-expected.bin` and `spirv-report.json` under
 `build/gpu-shader-spirv-demo`. Without `--spirv-val` it explicitly reports
-that Khronos validation was not checked. The CLI and demo do not create a
-Vulkan device or dispatch work; validate modules before using an external
-compute harness. Unsupported emission does not open/truncate the output file.
+that Khronos validation was not checked. The emission CLI does not create a
+Vulkan device or dispatch work. The demo can optionally dispatch and compare
+its fixtures using `--compute-tool` and the headless runner described below.
+Without that option, it explicitly reports that no Vulkan dispatch was
+performed. Unsupported emission does not open/truncate the output file.
 
-Development checks validate generated modules with Khronos `spirv-val` before
+The earlier integer development checks validate generated modules with Khronos `spirv-val` before
 dispatching them in a private Vulkan harness on an NVIDIA GeForce RTX 3080.
 Across 147 programs, all 301,056 lane states (77,070,336 uint32 words) agree;
 the same number also passes on Mesa's software Vulkan implementation using
@@ -904,7 +917,7 @@ rendering correctness or a percentage of full shader compatibility.
 
 `gpu_shader_spirv_emit_bounded(program, budget, words, capacity, word_count)`
 adds BRA, guarded/early EXIT, loops and resumable instruction budgets to the
-same integer arithmetic subset: all 22 currently decoded instruction families.
+same scalar subset: all 32 currently decoded instruction families.
 It keeps the original straight-line API and its 256-word ABI unchanged.
 Use the original path for straight-line emission rather than paying for the
 experimental dispatcher when it is unnecessary.
@@ -970,7 +983,9 @@ under `build/gpu-shader-spirv-control-demo`: diamonds, predicated exits, counted
 loop resumption, self-loops (including budget 4,096), falloff, step overflow,
 low-step carry, already-halted and invalid-state preservation. It writes raw
 code, modules, input/expected lane buffers and `control-report.json`; it does
-not create a Vulkan device or claim to dispatch those fixtures itself.
+not dispatch unless `--compute-tool` is provided. With that option, it checks
+every full lane result and feeds the actual counted-loop partial output back
+into the runner for the resumption fixture.
 Invalid CLI budgets and failed preparation/emission preserve existing output
 files. A compute harness must validate each module before submission.
 
@@ -985,6 +1000,497 @@ Across 55 programs and four budgets, all 112,640 complete lane states
 All 13 independent fixtures also agree on both backends, including chained
 resumption and budget 4,096. The 301,056-state straight-line hardware regression
 still passes separately.
+
+## Optional headless Vulkan compute runner
+
+`POUND_BUILD_GPU_VULKAN=ON` adds `gpu_shader_vulkan_run` to PoundCore and,
+when GPU tools are enabled, builds **PoundGpuCompute**. The option defaults to
+OFF: ordinary core/shader-tool builds do not gain a Vulkan SDK dependency.
+Enabling it requires Vulkan 1.1 development headers and a loader, discoverable
+by CMake's `find_package(Vulkan)`, plus a compatible runtime driver.
+
+```sh
+cmake -S . -B build/gpu -DPOUND_BUILD_GPU_TOOLS=ON -DPOUND_BUILD_GPU_VULKAN=ON
+cmake --build build/gpu --target PoundGpuShader PoundGpuCompute
+PoundGpuCompute straight raw-sm86.bin lane-input.bin lane-output.bin
+PoundGpuCompute bounded raw-sm86.bin lane-input.bin lane-output.bin 256 auto
+```
+
+The runner accepts **raw SM86 from the supported subset**, not arbitrary SPIR-V.
+It prepares/validates the entire program and emits its own module before
+creating an instance, selecting a compute device and allocating a storage
+buffer. It then creates descriptors, a compute pipeline and command buffer,
+dispatches exactly `(lane_count, 1, 1)`, waits on a fence, reads the resulting
+state and destroys its resources. Host/shader barriers and explicit
+flush/invalidate handling support both coherent and noncoherent host-visible
+memory. `spirv-val` is not invoked inside the runner; the public fixture demos
+can run it separately with `--spirv-val` before checking GPU execution.
+
+The little-endian file ABI is unchanged: **256 words per straight-line lane**
+or **261 words per bounded lane**. Do not mix the strides. Input must contain
+1–4,096 complete records. Straight-line predicate masks must be 0–127;
+invalid masks reject the entire call. Bounded mode retains the per-lane
+invalid-state/fault behavior documented above. Budget defaults to 256 in the
+bounded CLI and is in 1–4,096; it counts guest instructions, not wall time.
+
+An optional final device argument accepts `auto` or a physical-device index.
+Auto selection prefers a compatible discrete GPU, otherwise the first
+compatible compute device. Indices follow Vulkan enumeration and are not
+stable device identities across runs. The runner prints the selected device.
+It checks Vulkan version, compute-queue availability, dispatch-count and
+storage-buffer limits instead of assuming the first adapter is usable.
+
+```sh
+PoundGpuCompute straight raw-sm86.bin lane-input.bin lane-output.bin 0
+PoundGpuCompute bounded loop.bin partial-input.bin partial-output.bin 3 0
+PoundGpuCompute bounded loop.bin partial-output.bin resumed-output.bin 109 0
+```
+
+`gpu_shader_vulkan_run(program, budget, state, state_word_count, device, report)`
+is a synchronous, one-shot API. Budget **0** selects the strict straight-line
+emitter; 1–4,096 selects bounded mode. State is a caller-owned, writable uint32
+array in host byte order; word count determines the lane count. The prepared
+program/storage must remain valid and immutable throughout the call. State,
+the optional report and program storage must not overlap. A host/API/driver
+failure preserves the state and report. Success updates the state and optional
+device report, even when individual bounded lanes report faults or unfinished
+execution. Read word 260 of each bounded lane to distinguish those results.
+
+The CLI similarly leaves an existing output file unopened on argument,
+preparation or execution failure. A write failure after successful execution
+can still leave a partial output file. An exit code of zero means dispatch
+and output writing succeeded, **not that every bounded lane exited normally**.
+
+The public demos now accept an optional runner from the same build/checkout:
+
+```sh
+python tools/gpu/make_shader_spirv_demo.py --shader-tool /path/to/PoundGpuShader --compute-tool /path/to/PoundGpuCompute --spirv-val /path/to/spirv-val
+python tools/gpu/make_shader_spirv_control_demo.py --shader-tool /path/to/PoundGpuShader --compute-tool /path/to/PoundGpuCompute --spirv-val /path/to/spirv-val
+```
+
+Their reports distinguish module validation from actual Vulkan dispatch;
+without `--compute-tool` no dispatch is claimed. Fresh runner checks compare
+**37,888 full lane states across 58 dispatches on each of RTX 3080 and software
+Vulkan**, including the 4,096-lane boundary, all predicate masks, interior PCs,
+overflow, fault preservation and randomized branch/loop programs. All 13
+independent control fixtures also pass on both backends. Additional developer
+checks cover 26 CLI rejections with output preservation and 50 simulated Vulkan
+device-lost/out-of-memory failures with complete cleanup. Native and ASan/UBSan
+checks exercise coherent/noncoherent cache paths and API rejection separately
+from real device execution.
+
+### Reusable sessions and compiled kernels
+
+The one-shot `gpu_shader_vulkan_run` remains available, but now wraps the same
+reusable implementation as the persistent APIs:
+
+| API | Purpose |
+| --- | --- |
+| `gpu_shader_vulkan_session_create(device, lane_capacity, &session)` | Create a Vulkan instance/device, mapped state buffer, descriptors, command buffer and fence once |
+| `gpu_shader_vulkan_kernel_create(session, program, budget, &kernel)` | Compile an immutable shader snapshot into a reusable pipeline |
+| `gpu_shader_vulkan_dispatch(session, kernel, state, word_count, report)` | Upload caller state, dispatch the compiled kernel and read complete lane results |
+| `gpu_shader_vulkan_kernel_destroy(kernel)` | Release a compiled pipeline |
+| `gpu_shader_vulkan_session_destroy(session)` | Release the session after all its kernels are destroyed |
+
+Session capacity is fixed at creation, in 1–4,096 lanes, with enough storage
+for the bounded 261-word stride. The same session can alternate straight-line
+and bounded kernels and dispatch smaller batches. Capacity is checked before
+reading lane contents. Buffers, descriptors and fences are reused; command
+buffers/fences are reset only after the preceding synchronous submission has
+completed. This does **not** add asynchronous queues or automatic GPU-resident
+state chaining: each dispatch still uploads caller state and reads results.
+`report.dispatch_index` counts successful dispatches within that session.
+
+The prepared source and its storage may be discarded after kernel creation
+succeeds. Changing guest shader code requires compiling a new kernel; there
+is no automatic code invalidation or shared/global shader-cache lookup. A
+kernel belongs to exactly one session. Destroying a session with live kernels
+returns `POUND_ERROR_GPU_BUSY` without changing it; destroy its kernels first.
+The caller must externally serialize all use/destruction of a session and its
+kernels. Handles must remain valid for each call, and state/report storage
+must not overlap handles or each other.
+
+Creation failures preserve output handle slots. Invalid arguments preserve
+the existing session. Vulkan compilation/dispatch failures conservatively
+mark it unusable: later compilation/dispatch returns a Vulkan failure without
+retrying the driver. Destroy kernels and recreate the session to recover.
+Dispatch failures preserve caller state and report; safe teardown drains any
+possibly pending submission before releasing referenced pipelines/resources.
+Teardown requires a completion or device-lost result; it does not free
+in-flight resources merely because an idle wait failed. If a broken driver
+cannot acknowledge either state, teardown can remain blocked.
+
+**`bounded-chain`** keeps one session and compiled kernel alive while feeding
+each completed dispatch's output into the next input:
+
+```sh
+PoundGpuCompute bounded-chain loop.bin lane-input.bin lane-output.bin 3 40 auto
+```
+
+The last two numeric arguments are the instruction budget **per dispatch**
+and a dispatch-count cap, both in 1–4,096; defaults are 256 and 256. It stops
+when no lane has resumable budget exhaustion, or the dispatch cap is reached.
+Step-counter overflow is terminal and is not retried indefinitely. Mixed
+halted, faulting and unfinished lanes retain their per-lane semantics.
+Exhausting the cap still writes partial state with resource-limit statuses,
+which can be resumed later; it is not an execution error or normal guest exit.
+
+The public control demo checks three persistent chains in addition to its
+13 individual fixtures: a counted loop finishes after 38 budget-3 dispatches,
+a self-loop stops after four, and step overflow stops after one. Separate
+session checks pass **63,168 full lane states across 384 dispatches per backend**
+on RTX 3080 and software Vulkan, alternating three compiled kernels and batch
+sizes 1/17/128/512 in one session. They discard/mutate prepared source storage,
+check guard words, kernel ownership, capacity and busy-session destruction.
+
+A local, single-lane, 32-iteration setup-overhead microbenchmark measures about
+**128.46 ms per one-shot call versus 0.321 ms per reused dispatch** on RTX 3080,
+and 19.57 ms versus 0.381 ms on software Vulkan. These numbers primarily measure
+avoided instance/device/pipeline creation, not faster shader arithmetic,
+rendering frame rates or expected game speedups.
+
+This is a **development compute runner**, not a production renderer or guest
+submission service. Explicit compiled-kernel reuse is available, but there is
+no persistent disk pipeline cache, asynchronous queue or guest resource model.
+Fence waits and safe teardown can block on a driver; the instruction budget
+does not provide a wall-clock timeout. Keep experiments small. Textures,
+graphics draws, presentation, guest OS integration and warp synchronization
+remain unimplemented.
+
+### FP32 comparison and min/max
+
+`FSETP` and `FMNMX` now execute in the CPU reference, prepared programs and
+both SPIR-V paths. Register operands support absolute value followed by
+negation; immediate operands carry their complete 32-bit pattern. FTZ flushes
+subnormal inputs to zero while preserving their sign. Instruction predication,
+predicate inversion, RZ/PT and source/destination aliases follow the existing
+lane model. Unsupported constant/uniform sources and additional min/max
+modifiers fail explicitly.
+
+For these two instructions, JSON traces include `float_comparison` (the
+0–15 FSETP relation code), `float_ftz` and each source's `absolute` flag.
+The source `negate` flag flips its FP sign after applying absolute value.
+
+FSETP supports F, LT, EQ, LE, GT, NE, GE, NUM, NAN, LTU, EQU, LEU, GTU, NEU,
+GEU and T. Ordered comparisons are false for NaNs; unordered comparisons are
+true for NaNs. Positive and negative zero compare equal. The second predicate
+combines the **complement of the comparison** with the condition using the
+selected AND/OR/XOR operation. Condition and execution predicates are captured
+before either result is written; overlapping non-PT output predicates are
+rejected.
+
+FMNMX selects numeric minimum for a true condition and maximum for a false
+condition. A single NaN selects the other operand; two NaNs produce SM86's
+canonical `0x7fffffff`. Minimum of opposite signed zeros is negative zero;
+maximum is positive zero. Both implementations operate on integer bit patterns,
+so these results do not depend on host floating-point rounding or denormal
+modes, and SPIR-V does not require float-controls extensions.
+
+Native SM86 checks compare **4,718,592 results across 1,152 encodings** against
+the CPU reference on RTX 3080, with zero mismatches. The native test kernels
+include explicit scheduling delays to respect hardware predicate dependencies.
+Separate Vulkan checks pass **62,464 complete lane states across 122 dispatches
+on each of RTX 3080 and software Vulkan**. These span 26 programs, all 128
+starting predicate masks, modifiers, aliases, branch graphs, interior PCs,
+fault preservation and budgets 1/3/16/97. Both GCC- and Clang-produced modules
+pass Khronos validation; their instruction-ID ordering can differ.
+
+The public demo supplies **648 independently specified edge states per path**,
+including signed zeros, subnormals, infinities and quiet/signaling NaNs. It
+also checks both CPU execution paths for zero-initialized input and 12
+unsupported-emission cases with output preservation:
+
+```sh
+python tools/gpu/make_shader_spirv_float_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+Omit `--compute-tool` to generate inputs, expected states and modules without
+dispatching. The report records whether validation and dispatch were actually
+performed. Maximum-size emission, constant-pool capacity, deterministic output
+within one compiler, guard words and failure preservation also pass ASan/UBSan
+checks. FADD/FMUL/FFMA and scalar conversions are covered below; FP16 arithmetic and FP64
+and graphics-stage integration are still unimplemented.
+
+### FP32 addition and multiplication
+
+`FADD` and `FMUL` execute in the CPU reference, prepared programs and both
+SPIR-V paths. They support nearest-even, toward-negative-infinity,
+toward-positive-infinity and toward-zero rounding, plus FTZ, saturation,
+register abs/neg modifiers, execution predicates, RZ/PT and register aliases.
+FADD uses SM86's second immediate form; FMUL uses the fourth. Constant/uniform
+sources, nondefault FMUL scaling and DNZ are rejected explicitly.
+
+The reference uses integer significands with guard/round/sticky bits.
+SPIR-V uses 32-bit integer operations and paired multiplication, retaining
+subnormals without a shaderInt64 or float-controls requirement. Signed zeros,
+exact cancellation, rounding ties, overflow, gradual underflow, infinities,
+invalid operations and canonical NaNs follow the measured SM86 behavior.
+Saturation clamps results to [0, 1] and maps NaNs to positive zero. Tests
+also preserve the measured, rounding-dependent FTZ underflow cutoff. Some
+tiny results flush even when FP32 rounding alone would produce the smallest
+normal value; nearby results can recover a normal value. The fused tests
+below exposed and corrected this boundary in both implementations.
+
+Native hardware checks pass **12,582,912 results across 1,536 encodings** on
+RTX 3080, including all rounding modes, FTZ/SAT, register modifiers,
+immediates and execution guards. Maximum-size emission, constant-pool
+capacity, guard words, deterministic output and failure preservation pass
+ASan/UBSan and Khronos validation checks.
+
+Separately, **77,824 complete lane states across 152 dispatches on each of
+RTX 3080 and software Vulkan** match the reference. The 32 programs cover
+all 128 predicate masks, source/destination aliases, FSETP-driven branches,
+interior PCs, fault preservation and budgets 1/3/16/97. Every tested module
+passes Khronos validation before dispatch.
+
+The new public demo computes expected values with Python's exact rational
+arithmetic, independently of the C significand implementation. It checks
+**1,800 edge states for each SPIR-V path**, including the smallest-normal
+rounding boundary, plus 12 unsupported-emission cases:
+
+```sh
+python tools/gpu/make_shader_spirv_arithmetic_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+With a compute runner, it also checks a 128-lane arithmetic/compare loop
+resumed through six budget-3 dispatches while retaining one compiled kernel.
+Reports distinguish emitted fixtures, Khronos validation and actual dispatch.
+Other conversion widths, FP16 arithmetic, FP64 and graphics stages remain unimplemented.
+
+### Fused FP32 multiply-add
+
+`FFMA` now executes in the CPU reference, prepared programs and both SPIR-V
+paths. It keeps the product through the addition and rounds once to FP32.
+The first source is a GPR; the other two are GPRs or one 32-bit immediate
+multiplicand/addend. All four rounding modes, FTZ, saturation, abs/neg source
+modifiers, execution predicates, RZ/PT and aliases are supported. DNZ,
+constant/uniform sources and unchecked semantic fields fail explicitly.
+
+The reference uses a wide integer significand and sticky alignment; SPIR-V
+uses pairs of 32-bit words, extended multiplication and carry/borrow-aware
+addition/subtraction. Neither requires host FP controls or shaderInt64.
+Large intermediate products can be cancelled by the addend before overflow
+is decided, and cancellation retains bits lost by separate multiply/add.
+
+Native SM86 checks pass **29,360,128 results across 3,584 encodings** on
+RTX 3080. Separately, **45,056 complete lane states across 88 dispatches on
+each of RTX 3080 and software Vulkan** match the reference across 32
+stratified programs. These include all predicate masks, aliases,
+FSETP-driven branches, interior PCs, fault preservation and budgets 1/37.
+Each module passes Khronos validation before dispatch. Maximum-size
+emission, constant-pool capacity and output preservation pass ASan/UBSan.
+
+The public fused demo checks **538 exact rational states per path per
+backend** and eight unsupported-emission rejections. Its fixtures include
+the fused result for `(1 + 2^-23) * (1 - 2^-23) - 1`, which is `-2^-46`
+instead of the zero produced by separately rounded multiplication and
+addition, plus overflow cancellation, signed zeros, NaNs and underflow sweeps.
+
+```sh
+python tools/gpu/make_shader_spirv_fused_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+The underflow sweeps also fix an overly aggressive FTZ cutoff in the earlier
+FMUL implementation. For example, nearest-even `FMUL.FTZ` returns zero for
+`0x00800000 * 0x3f7fffff`, but returns `0x00800000` for
+`0x00800001 * 0x3f7ffffe`. Directed rounding has a different cutoff.
+The shared CPU/SPIR-V rounding helper now reproduces these measured cases,
+and addition/multiplication hardware and Vulkan regressions are rerun.
+
+With a compute runner, the fused demo also checks a 128-lane loop with an
+aliased accumulator through seven budget-2 dispatches while reusing one
+compiled kernel. Reports record whether modules were only emitted,
+validated or actually dispatched.
+
+This remains an independent-lane compute subset. Other conversion widths, FP16 arithmetic, FP64,
+textures, graphics stages and warp synchronization remain unimplemented.
+
+### FP32 / 32-bit integer conversions
+
+F2I converts FP32 to signed/unsigned 32-bit integers; I2F converts signed/unsigned
+32-bit integers to FP32. Both paths support nearest-even, down, up and toward-zero
+rounding, register/immediate inputs, execution guards, RZ/PT and aliases.
+F2I also supports FTZ and register absolute/negate modifiers.
+
+F2I clamps finite and infinite results to the destination integer range.
+NTZ converts NaNs to zero, matching PTX `cvt` behavior; without NTZ, raw SM86
+returns `0x80000000` for both signed and unsigned destinations. NaN sign/payload
+do not change that result. Subnormal inputs are retained unless FTZ is enabled,
+so directed rounding can produce a nonzero integer from a tiny nonzero input.
+
+Both the CPU reference and SPIR-V use integer significands and bounded shifts.
+I2F rounds the integer magnitude once to FP32. F2I avoids host C float-to-integer
+casts and Vulkan conversion instructions whose out-of-range results are unsuitable
+for reproducing this instruction. No host FP environment, shaderInt64 or
+floating-point-control features are required. Other widths, constant/uniform
+sources, and I2F source modifiers or unchecked semantic fields are rejected.
+The separate I2FP encoding is covered below for its verified FP32/32-bit RN/RZ subset.
+
+Native RTX 3080 checks pass **10,289,152 results across 1,256 encodings**.
+Separate differential checks pass **45,056 complete lane states / 88 dispatches
+per backend** on RTX 3080 and software Vulkan across 32 programs. These cover
+aliases, all 128 predicate masks, branches, invalid/interior PCs, overflow and
+budgets 1/37. Modules pass Khronos validation before dispatch. Maximum-size
+emission, constant-pool capacity and output preservation pass ASan/UBSan.
+
+The public conversion demo independently specifies **512 exact rational states
+per path per backend** and checks 24 output-preserving emission rejections.
+It includes signed/unsigned boundaries, half-integer ties, integer-to-float ties,
+NaNs, infinities, subnormals, guards and aliases. With a compute runner it also
+checks a 128-lane conversion/arithmetic loop through seven budget-3 dispatches,
+reusing one session and compiled kernel.
+
+```sh
+python tools/gpu/make_shader_spirv_conversion_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+Without `--compute-tool`, modules and expected state buffers are generated, but
+no Vulkan dispatch is claimed. This remains a synthetic independent-lane
+compute subset, not game rendering or complete shader conversion coverage.
+
+### FP32 integral rounding
+
+FRND rounds an FP32 input to an integral value, keeping the result in FP32.
+Unlike F2I, it does not clamp to the signed or unsigned 32-bit integer range.
+Inputs already integral at large magnitudes remain unchanged. Nearest-even,
+floor, ceil and truncation support register/immediate inputs, FTZ, register
+abs/neg, execution predicates, RZ/PT and aliases in both SPIR-V paths.
+
+Signed zero is preserved, including negative results rounded to zero.
+Non-FTZ subnormals can round to positive or negative one in an outward
+direction; FTZ flushes the input to signed zero first. Infinities retain
+their sign, and quiet/signaling NaNs produce the measured SM86 canonical
+`0x7fffffff`. Other widths, constant/uniform sources and unknown fields
+are rejected rather than approximated.
+
+The CPU reference clears and rounds significand bits. SPIR-V reproduces
+the same semantics using 32-bit integer operations and masked shifts, not
+host FP rounding instructions or implementation-dependent float controls.
+No shaderInt64 or additional device capabilities are required.
+
+Native RTX 3080 checks pass **2,752,512 results across 336 encodings**.
+Separate differential checks pass **45,056 complete lane states / 88 dispatches
+per backend** on RTX 3080 and software Vulkan across 32 programs, including
+aliases, all predicate masks, branches, interior/invalid PCs, step overflow
+and budgets 1/37. Modules pass Khronos validation before dispatch.
+Maximum-size emission, constant-pool capacity and output preservation pass
+ASan/UBSan; sanitized raw/prepared execution compares 86,016 full-state pairs.
+
+The public rounding demo checks **512 exact rational states per path per
+backend**, 24 output-preserving emission rejections, and a 128-lane aliased
+rounding/arithmetic loop through seven budget-3 dispatches using one
+compiled kernel. Its edge cases include half-integer ties, signed zeros,
+subnormals, infinities, NaNs and integral values beyond the integer range.
+
+```sh
+python tools/gpu/make_shader_spirv_round_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+Without a compute runner, modules and expected state buffers are emitted,
+with optional Khronos validation, but no Vulkan dispatch is claimed.
+
+### I2FP FP32/32-bit conversion encoding
+
+I2FP's separate encoding now accepts signed/unsigned 32-bit integer inputs
+and FP32 results with nearest-even (RN) or toward-zero (RZ) rounding.
+The native PTX fixture emits this encoding for `cvt.rn.f32.s32` and
+`cvt.rz.f32.u32`, which previously rejected even though I2F was supported.
+Register/immediate inputs, execution guards, RZ/PT and source/destination
+aliases use the existing integer-only conversion implementation in the
+CPU reference and both SPIR-V paths.
+
+Other widths, packing/suboperations, constant/uniform inputs and source
+modifiers are still rejected. RM/RP are not accepted or coerced into a
+different rounding mode; the separately supported I2F encoding implements
+all four modes. This extends encoding coverage and does not claim a measured
+emulator speedup or complete I2FP packing support.
+
+These tests also uncovered a software Vulkan bit-preservation issue affecting
+ordinary MOV and I2F, not just I2FP: a predicated zero write over `0xbf800000`
+returned `0x80000000` on llvmpipe/LLVM 15 with a plain word OpSelect.
+Register commits now use a full-word mask/XOR merge for both normal and wide
+destinations. The public fixture checks MOV, I2F and I2FP zero overwrites
+across all predicate masks, including preserving the previous bits when inactive.
+
+Native RTX 3080 checks pass **1,474,560 results across 180 encodings**,
+including an aliased source/destination, RZ, signed boundaries and rounding ties.
+Separate differential checks pass **45,056 complete lane states / 88 dispatches
+per backend** on RTX 3080 and software Vulkan across 32 programs with
+aliases, all predicate masks, branches, interior/invalid PCs, step overflow
+and budgets 1/37. Modules pass Khronos validation before dispatch.
+Maximum-size emission, constant capacity and output preservation pass
+ASan/UBSan; sanitized raw/prepared execution compares 46,080 full-state pairs.
+
+The public I2FP demo checks **512 exact rational states per path per backend**,
+paired I2F/I2FP cases and 28 output-preserving emission rejections. With a
+compute runner it also checks a 128-lane conversion/arithmetic loop through
+seven budget-3 dispatches while reusing one compiled kernel.
+
+```sh
+python tools/gpu/make_shader_spirv_i2fp_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+Without `--compute-tool`, modules and expected states are generated, with
+optional Khronos validation, but no Vulkan dispatch is claimed.
+
+### Scalar FP32 to FP16 conversion
+
+F2F's F16.F32 direction converts an FP32 input
+into an FP16 bit pattern in the low 16 bits of a zero-extended 32-bit register.
+All four rounding modes, FTZ, register abs/neg, register/immediate inputs,
+execution guards, RZ/PT and source/destination aliases are supported.
+
+Integer significands and exact rounding reproduce subnormals, nearest-even
+ties, signed zero, directional overflow and infinities. NaNs produce the
+measured native half canonical `0x7fff`, regardless of sign or payload.
+The raw SM86 FTZ flag flushes FP32 subnormal inputs and half-subnormal outputs;
+rounding into a half-normal result is retained. For example, converting
+`0x33800000` normally yields `0x0001`, while FTZ yields zero. Nearest-even
+conversion of `0x387fe000` yields `0x0400`, including with FTZ enabled.
+
+CPU and SPIR-V use only 32-bit integer arithmetic and bounded shifts.
+No host FP mode, shaderInt64 or Vulkan shaderFloat16 support is required.
+Same-width F2F, packed F2FP conversions, FP64, saturation,
+constant/uniform sources and unchecked fields are rejected explicitly.
+This is not FP16 arithmetic or complete F2F-family support.
+
+The F32.F16 direction now widens the low 16 bits of a register exactly to FP32.
+Upper source bits are ignored, abs/neg modify the half sign, and FTZ flushes
+half subnormals to signed zero. NaNs become canonical FP32 `0x7fffffff`.
+All four rounding fields are accepted; finite widening is exact and does not
+round. Immediate widening and high-half selectors remain unsupported.
+CPU and SPIR-V normalize half subnormals with integer arithmetic; no Vulkan
+shaderFloat16 support is required.
+
+Native comparisons pass 12,582,912 cases across 192 encodings supplied every
+binary16 bit pattern, random upper halves and execution guards. Multi-instruction
+checks pass 45,056 complete states per backend on RTX 3080 and software Vulkan.
+The public widening fixture independently compares Python binary16 expansion
+against 4,096 states per fast/bounded path on each backend. Maximum-size emission,
+output preservation and 49,152 raw/prepared state pairs pass ASan/UBSan.
+
+```powershell
+python tools/gpu/make_shader_spirv_widen_demo.py --shader-tool build/gcc/bin/windows/PoundGpuShader.exe --compute-tool build/gcc/bin/windows/PoundGpuCompute.exe
+```
+
+Native RTX 3080 checks pass **2,752,512 results across 336 encodings**.
+Separate differential checks pass **45,056 complete lane states / 88 dispatches
+per backend** on RTX 3080 and software Vulkan across 32 programs with
+aliases, all predicate masks, branches, interior/invalid PCs, step overflow
+and budgets 1/37. Modules pass Khronos validation before dispatch.
+Maximum-sized emission, constant-pool capacity and output preservation pass
+ASan/UBSan; sanitized raw/prepared execution compares 86,016 full-state pairs.
+
+The public half-conversion demo checks **512 exact rational states per path
+per backend**, 24 output-preserving emission rejections and a 128-lane
+conversion/arithmetic loop through six budget-3 dispatches using one kernel.
+
+```sh
+python tools/gpu/make_shader_spirv_half_demo.py --shader-tool /path/to/PoundGpuShader --spirv-val /path/to/spirv-val --compute-tool /path/to/PoundGpuCompute
+```
+
+Without `--compute-tool`, modules and expected states are generated, with
+optional Khronos validation, but no Vulkan dispatch is claimed.
 
 ## Next layers
 
@@ -1013,6 +1519,17 @@ captured game submissions.
 - [NVIDIA PTX byte permutation semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-prmt)
 - [NVIDIA PTX packed byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp4a)
 - [NVIDIA PTX packed halfword/byte dot product](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#integer-arithmetic-instructions-dp2a)
+- [NVIDIA PTX floating-point comparisons and predicate combination](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#comparison-and-selection-instructions-setp)
+- [NVIDIA PTX floating-point min/max semantics](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#floating-point-instructions-min)
+- [NVIDIA PTX floating-point addition](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#floating-point-instructions-add)
+- [NVIDIA PTX floating-point multiplication](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#floating-point-instructions-mul)
+- [NVIDIA PTX fused multiply-add](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#floating-point-instructions-fma)
+- [NVIDIA PTX conversion, rounding and saturation](https://docs.nvidia.com/cuda/archive/12.5.0/parallel-thread-execution/index.html#data-movement-and-conversion-instructions-cvt)
 - [Khronos SPIR-V specification](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
 - [Khronos SPIR-V core instruction grammar](https://github.com/KhronosGroup/SPIRV-Headers/blob/main/include/spirv/unified1/spirv.core.grammar.json)
 - [Khronos SPIRV-Tools validator](https://github.com/KhronosGroup/SPIRV-Tools)
+- [Khronos Vulkan host memory and noncoherent cache rules](https://docs.vulkan.org/spec/latest/chapters/memory.html)
+- [Khronos Vulkan synchronization and cache control](https://docs.vulkan.org/spec/latest/chapters/synchronization.html)
+- [Khronos Vulkan command-buffer reset requirements](https://docs.vulkan.org/refpages/latest/refpages/source/vkResetCommandBuffer.html)
+- [Khronos Vulkan fence reset requirements](https://docs.vulkan.org/refpages/latest/refpages/source/vkResetFences.html)
+- [Khronos Vulkan device-loss and resource-lifetime rules](https://docs.vulkan.org/spec/latest/chapters/devsandqueues.html#devsandqueues-lost-device)

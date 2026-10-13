@@ -78,16 +78,60 @@ trace_shader(const uint8_t *bytes, size_t size)
             instruction.lookup,
             instruction.branch_bytes);
         const gpu_shader_source_t *source = instruction.sources;
+        const uint32_t             floating
+            = GPU_SHADER_FSETP == instruction.operation || GPU_SHADER_FMNMX == instruction.operation
+              || GPU_SHADER_FADD == instruction.operation
+              || GPU_SHADER_FMUL == instruction.operation
+              || GPU_SHADER_FFMA == instruction.operation || GPU_SHADER_F2I == instruction.operation
+              || GPU_SHADER_FRND == instruction.operation
+              || GPU_SHADER_F2F == instruction.operation;
         for (uint32_t index = 0; index < instruction.source_count; ++index, ++source)
         {
-            printf("%s{\"kind\":\"%s\",\"value\":%u,\"negate\":%u}",
+            printf("%s{\"kind\":\"%s\",\"value\":%u,\"negate\":%u",
                    0 != index ? "," : "",
                    GPU_SHADER_SOURCE_REGISTER == source->kind ? "register" : "immediate",
                    source->value,
                    source->negate);
+            if (floating)
+            {
+                printf(",\"absolute\":%u", source->absolute);
+            }
+            putchar('}');
+        }
+        printf("]");
+        if (GPU_SHADER_F2I == instruction.operation || GPU_SHADER_I2F == instruction.operation
+            || GPU_SHADER_I2FP == instruction.operation)
+        {
+            printf(",\"conversion_signed\":%u,\"float_nan_to_zero\":%u,\"float_rounding\":%u",
+                   instruction.conversion_signed,
+                   instruction.float_nan_to_zero,
+                   (uint32_t)instruction.float_rounding);
+        }
+        if (floating)
+        {
+            printf(",\"float_comparison\":%u,\"float_ftz\":%u",
+                   (uint32_t)instruction.float_comparison,
+                   instruction.float_ftz);
+            if (GPU_SHADER_F2F == instruction.operation)
+            {
+                printf(",\"float_source_bits\":%u,\"float_destination_bits\":%u",
+                       instruction.float_widen ? 16U : 32U,
+                       instruction.float_widen ? 32U : 16U);
+            }
+            if (GPU_SHADER_FRND == instruction.operation || GPU_SHADER_F2F == instruction.operation)
+            {
+                printf(",\"float_rounding\":%u", (uint32_t)instruction.float_rounding);
+            }
+            if (GPU_SHADER_FADD == instruction.operation || GPU_SHADER_FMUL == instruction.operation
+                || GPU_SHADER_FFMA == instruction.operation)
+            {
+                printf(",\"float_rounding\":%u,\"float_saturate\":%u",
+                       (uint32_t)instruction.float_rounding,
+                       instruction.float_saturate);
+            }
         }
         printf(
-            "],\"shift_type\":%u,\"shift_right\":%u,\"shift_wrap\":%u,\"shift_high\":%u,\"return_"
+            ",\"shift_type\":%u,\"shift_right\":%u,\"shift_wrap\":%u,\"shift_high\":%u,\"return_"
             "shift\":%u,"
             "\"address_shift\":%u,\"intermediate_negate\":%u,\"carry_in\":%u,"
             "\"dot_signed\":[%u,%u],\"dot_high\":%u,\"multiply_mode\":%u,"

@@ -33,7 +33,45 @@ typedef enum
     GPU_SHADER_LEA,
     GPU_SHADER_IDP4,
     GPU_SHADER_IDP2,
+    GPU_SHADER_FSETP,
+    GPU_SHADER_FMNMX,
+    GPU_SHADER_FADD,
+    GPU_SHADER_FMUL,
+    GPU_SHADER_FFMA,
+    GPU_SHADER_F2I,
+    GPU_SHADER_I2F,
+    GPU_SHADER_FRND,
+    GPU_SHADER_I2FP,
+    GPU_SHADER_F2F,
 } gpu_shader_operation_t;
+
+typedef enum
+{
+    GPU_SHADER_FLOAT_FALSE,
+    GPU_SHADER_FLOAT_LT,
+    GPU_SHADER_FLOAT_EQ,
+    GPU_SHADER_FLOAT_LE,
+    GPU_SHADER_FLOAT_GT,
+    GPU_SHADER_FLOAT_NE,
+    GPU_SHADER_FLOAT_GE,
+    GPU_SHADER_FLOAT_NUM,
+    GPU_SHADER_FLOAT_NAN,
+    GPU_SHADER_FLOAT_LTU,
+    GPU_SHADER_FLOAT_EQU,
+    GPU_SHADER_FLOAT_LEU,
+    GPU_SHADER_FLOAT_GTU,
+    GPU_SHADER_FLOAT_NEU,
+    GPU_SHADER_FLOAT_GEU,
+    GPU_SHADER_FLOAT_TRUE,
+} gpu_shader_float_comparison_t;
+
+typedef enum
+{
+    GPU_SHADER_ROUND_NEAREST,
+    GPU_SHADER_ROUND_DOWN,
+    GPU_SHADER_ROUND_UP,
+    GPU_SHADER_ROUND_ZERO,
+} gpu_shader_float_rounding_t;
 
 typedef enum
 {
@@ -91,49 +129,57 @@ typedef struct
     gpu_shader_source_kind_t kind;
     uint32_t                 value;
     uint32_t                 negate;
+    uint32_t                 absolute;
 } gpu_shader_source_t;
 
 typedef struct
 {
-    gpu_shader_operation_t    operation;
-    gpu_shader_source_t       sources[3];
-    uint32_t                  words[4];
-    int64_t                   branch_bytes;
-    uint32_t                  source_count;
-    uint32_t                  destination;
-    uint32_t                  predicate;
-    uint32_t                  predicate_invert;
-    uint32_t                  condition;
-    uint32_t                  condition_invert;
-    uint32_t                  lookup;
-    gpu_shader_comparison_t   comparison;
-    gpu_shader_boolean_t      boolean_operation;
-    uint32_t                  compare_signed;
-    uint32_t                  compare_extended;
-    gpu_shader_shift_type_t   shift_type;
-    uint32_t                  shift_right;
-    uint32_t                  shift_wrap;
-    uint32_t                  shift_high;
-    uint32_t                  return_shift;
-    uint32_t                  address_shift;
-    uint32_t                  intermediate_negate;
-    uint32_t                  carry_in;
-    uint32_t                  dot_signed[2];
-    uint32_t                  dot_high;
-    gpu_shader_multiply_t     multiply_mode;
-    gpu_shader_permute_mode_t permute_mode;
-    uint32_t                  predicate_destinations[2];
-    uint32_t                  predicate_sources[3];
-    uint32_t                  predicate_source_inverts[3];
-    uint32_t                  predicate_lookups[2];
-    uint32_t                  predicate_source_count;
-    uint32_t                  predicate_destination_count;
-    uint32_t                  stall;
-    uint32_t                  yield;
-    uint32_t                  write_barrier;
-    uint32_t                  read_barrier;
-    uint32_t                  wait_mask;
-    uint32_t                  reuse_mask;
+    gpu_shader_operation_t        operation;
+    gpu_shader_source_t           sources[3];
+    uint32_t                      words[4];
+    int64_t                       branch_bytes;
+    uint32_t                      source_count;
+    uint32_t                      destination;
+    uint32_t                      predicate;
+    uint32_t                      predicate_invert;
+    uint32_t                      condition;
+    uint32_t                      condition_invert;
+    uint32_t                      lookup;
+    gpu_shader_comparison_t       comparison;
+    gpu_shader_boolean_t          boolean_operation;
+    uint32_t                      compare_signed;
+    uint32_t                      compare_extended;
+    gpu_shader_float_comparison_t float_comparison;
+    uint32_t                      float_ftz;
+    gpu_shader_float_rounding_t   float_rounding;
+    uint32_t                      float_saturate;
+    uint32_t                      conversion_signed;
+    uint32_t                      float_nan_to_zero;
+    uint32_t                      float_widen;
+    gpu_shader_shift_type_t       shift_type;
+    uint32_t                      shift_right;
+    uint32_t                      shift_wrap;
+    uint32_t                      shift_high;
+    uint32_t                      return_shift;
+    uint32_t                      address_shift;
+    uint32_t                      intermediate_negate;
+    uint32_t                      carry_in;
+    uint32_t                      dot_signed[2];
+    uint32_t                      dot_high;
+    gpu_shader_multiply_t         multiply_mode;
+    gpu_shader_permute_mode_t     permute_mode;
+    uint32_t                      predicate_destinations[2];
+    uint32_t                      predicate_sources[3];
+    uint32_t                      predicate_source_inverts[3];
+    uint32_t                      predicate_lookups[2];
+    uint32_t                      predicate_source_count;
+    uint32_t                      predicate_destination_count;
+    uint32_t                      stall;
+    uint32_t                      yield;
+    uint32_t                      write_barrier;
+    uint32_t                      read_barrier;
+    uint32_t                      wait_mask;
+    uint32_t                      reuse_mask;
 } gpu_shader_instruction_t;
 
 typedef struct

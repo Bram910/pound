@@ -203,7 +203,27 @@ add_linker_flags(PoundCore)
 add_sanitizers(PoundCore)
 
 option(POUND_BUILD_GPU_TOOLS "Build GPU command tracing and replay tools" OFF)
+option(POUND_BUILD_GPU_VULKAN "Build the experimental headless Vulkan shader runner" OFF)
+if (POUND_BUILD_GPU_VULKAN)
+    find_package(Vulkan 1.1 REQUIRED)
+    target_sources(PoundCore PRIVATE src/core/gpu/gpu_shader_vulkan.c)
+    target_link_libraries(PoundCore PRIVATE Vulkan::Vulkan)
+endif ()
+
 if (POUND_BUILD_GPU_TOOLS)
+    if (POUND_BUILD_GPU_VULKAN)
+        add_executable(PoundGpuCompute
+            tools/gpu/compute.c
+            src/core/gpu/gpu_shader.c
+            src/core/gpu/gpu_shader_program.c
+            src/core/gpu/gpu_shader_spirv.c
+            src/core/gpu/gpu_shader_vulkan.c)
+        target_include_directories(PoundGpuCompute PRIVATE src/core)
+        target_link_libraries(PoundGpuCompute PRIVATE Vulkan::Vulkan)
+        add_compiler_flags(PoundGpuCompute)
+        add_linker_flags(PoundGpuCompute)
+        add_sanitizers(PoundGpuCompute)
+    endif ()
     add_executable(PoundGpuShader
         tools/gpu/shader.c
         src/core/gpu/gpu_shader.c
